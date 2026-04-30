@@ -120,11 +120,11 @@ async function loadInputForm() {
     return `<tr class="${isWeekend?'weekend':''}">
       <td class="col-day">${d}</td>
       <td class="col-dow ${dow===0?'sun':dow===6?'sat':''}">${DOW[dow]}</td>
-      <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.breakfast??''}"
+      <td><input type="number" min="0" class="cell-input meal-input" value="${meal.breakfast??''}"
            data-date="${dateStr}" data-meal="breakfast" placeholder="0"></td>
-      <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.lunch??''}"
+      <td><input type="number" min="0" class="cell-input meal-input" value="${meal.lunch??''}"
            data-date="${dateStr}" data-meal="lunch" placeholder="0"></td>
-      <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.dinner??''}"
+      <td><input type="number" min="0" class="cell-input meal-input" value="${meal.dinner??''}"
            data-date="${dateStr}" data-meal="dinner" placeholder="0"></td>
       ${itemCells}
     </tr>`;

@@ -221,7 +221,12 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .col-dow  { width: 24px; }
 .col-dow.sun { color: #c00; }
 .col-dow.sat { color: #00c; }
-.col-meal { width: 42px; }
+.col-meal { width: 52px; }
+
+/* 数値入力のスピナーボタンを非表示（入力領域を広く確保） */
+.cell-input[type="number"]::-webkit-outer-spin-button,
+.cell-input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.cell-input[type="number"] { -moz-appearance: textfield; }
 .col-item { white-space: nowrap; }
 
 .cell-input {
