@@ -500,17 +500,17 @@ async function renderMasterPatients() {
     </tr>`).join('');
 
   const mainContent = selectedMasterWardId ? `
-    <table class="master-table">
-      <thead><tr><th>病棟</th><th>氏名</th><th>部屋</th><th>受給者証番号</th><th>状態</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
     <div class="add-row">
       <select id="new-p-ward">${wardOpts}</select>
       <input id="new-p-name" placeholder="氏名" style="width:120px">
       <input id="new-p-room" placeholder="部屋" style="width:60px">
       <input id="new-p-bno"  placeholder="受給者証番号" style="width:120px">
       <button onclick="addPatient()" class="btn-primary">追加</button>
-    </div>` : '<p class="no-patient">病棟を選択してください</p>';
+    </div>
+    <table class="master-table">
+      <thead><tr><th>病棟</th><th>氏名</th><th>部屋</th><th>受給者証番号</th><th>状態</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : '<p class="no-patient">病棟を選択してください</p>';
 
   document.getElementById('master-patients').innerHTML = `
     <div class="input-layout">
