@@ -126,8 +126,6 @@ async function loadInputForm() {
            data-date="${dateStr}" data-meal="lunch" placeholder="0"></td>
       <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.dinner??''}"
            data-date="${dateStr}" data-meal="dinner" placeholder="0"></td>
-      <td><input type="text" class="cell-input note-input" value="${meal.note??''}"
-           data-date="${dateStr}" data-meal="note"></td>
       ${itemCells}
     </tr>`;
   }).join('');
@@ -144,10 +142,9 @@ async function loadInputForm() {
             <tr>
               <th class="col-day">日</th>
               <th class="col-dow">曜</th>
-              <th class="col-meal">朝</th>
-              <th class="col-meal">昼</th>
-              <th class="col-meal">夕</th>
-              <th class="col-note">備考</th>
+              <th class="col-meal">朝食</th>
+              <th class="col-meal">昼食</th>
+              <th class="col-meal">夕食</th>
               ${itemHeaders}
             </tr>
           </thead>
@@ -176,7 +173,7 @@ async function saveAllRecords() {
     const date = el.dataset.date;
     const field = el.dataset.meal;
     if (!byDate[date]) byDate[date] = { items: [], meal: {} };
-    byDate[date].meal[field] = field === 'note' ? el.value : (Number(el.value) || 0);
+    byDate[date].meal[field] = Number(el.value) || 0;
   });
 
   for (const [date, data] of Object.entries(byDate)) {

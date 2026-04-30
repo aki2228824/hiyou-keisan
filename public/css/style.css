@@ -221,8 +221,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .col-dow  { width: 24px; }
 .col-dow.sun { color: #c00; }
 .col-dow.sat { color: #00c; }
-.col-meal { width: 34px; }
-.col-note { width: 70px; }
+.col-meal { width: 42px; }
 .col-item { white-space: nowrap; }
 
 .cell-input {
@@ -240,7 +239,6 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   outline: 1px solid #2c5f8a;
   border-radius: 2px;
 }
-.note-input { text-align: left; width: 68px; }
 
 /* 日次入力フォーム（旧・不使用） */
 .input-card {
