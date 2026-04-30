@@ -172,7 +172,7 @@ async function loadInputForm() {
         <label>朝食 <input type="number" min="0" id="mp-breakfast" value="${mealPrices.breakfast_price||''}" placeholder="0"> 円</label>
         <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${mealPrices.lunch_price||''}"     placeholder="0"> 円</label>
         <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${mealPrices.dinner_price||''}"    placeholder="0"> 円</label>
-        <label>食事費上限 <input type="number" min="0" id="mp-cap" value="${mealPrices.meal_cap||''}" placeholder="上限なし"> 円</label>
+        <label>食事費上限 <input type="number" min="0" id="mp-cap" value="${mealPrices.meal_cap||''}" placeholder="上限なし" style="width:90px"> 円</label>
         <button onclick="saveMealPrices('${patientId}','${year}','${month}')" class="btn-sm">単価保存</button>
         <span class="item-cost-disp">日用品費合計：<strong id="item-cost-total">${initItemCost.toLocaleString()}</strong> 円</span>
         <span class="meal-cost-disp">食事費合計：<strong id="meal-cost-total">${initMealCost.toLocaleString()}</strong> 円<span id="meal-cap-label" class="cap-label"></span></span>
