@@ -1,0 +1,19 @@
+{
+  "name": "hiyou-keisan",
+  "version": "1.0.0",
+  "description": "入院患者 日用品費計算・請求書出力システム",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js"
+  },
+  "dependencies": {
+    "sql.js": "^1.11.0",
+    "express": "^4.18.2",
+    "puppeteer": "^22.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3",
+    "xlsx": "^0.18.5"
+  }
+}
