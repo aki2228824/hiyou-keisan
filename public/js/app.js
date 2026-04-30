@@ -558,14 +558,14 @@ async function renderMasterItems() {
     </tr>`).join('');
 
   document.getElementById('master-items').innerHTML = `
+    <div class="add-row" style="justify-content:flex-end">
+      <input id="new-item-name" placeholder="物品名" style="width:150px">
+      <button onclick="addItem()" class="btn-primary">追加</button>
+    </div>
     <table class="master-table">
       <thead><tr><th>順序</th><th>物品名</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>
-    <div class="add-row">
-      <input id="new-item-name" placeholder="物品名" style="width:150px">
-      <button onclick="addItem()" class="btn-primary">追加</button>
-    </div>`;
+    </table>`;
 }
 
 async function updateItem(id, field, value) {
