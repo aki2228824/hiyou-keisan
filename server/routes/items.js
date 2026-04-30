@@ -1,19 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const { requireRole } = require('../middleware/auth');
 
 router.get('/', (req, res) => {
   res.json(db.query('SELECT * FROM items ORDER BY sort_order, id'));
 });
 
-router.post('/', (req, res) => {
+router.post('/', requireRole('admin'), (req, res) => {
   const { name, sort_order } = req.body;
   const maxSort = db.query('SELECT MAX(sort_order) as m FROM items')[0]?.m ?? 0;
   db.run('INSERT INTO items (name, sort_order) VALUES (?,?)', [name, sort_order ?? maxSort + 1]);
   res.json({ ok: true });
 });
 
-router.put('/:id', (req, res) => {
+router.put('/:id', requireRole('admin'), (req, res) => {
   const { name, sort_order, active } = req.body;
   db.run('UPDATE items SET name=?, sort_order=?, active=? WHERE id=?',
     [name, sort_order, active ?? 1, req.params.id]);
@@ -34,7 +35,7 @@ router.get('/prices', (req, res) => {
 });
 
 // 単価を設定（UPSERT）
-router.post('/prices', (req, res) => {
+router.post('/prices', requireRole('admin'), (req, res) => {
   const { item_id, year, month, unit_price } = req.body;
   db.run(`
     INSERT INTO prices (item_id, year, month, unit_price) VALUES (?,?,?,?)

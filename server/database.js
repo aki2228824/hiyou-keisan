@@ -97,6 +97,14 @@ function initSchema() {
       UNIQUE(patient_id, year, month),
       FOREIGN KEY (patient_id) REFERENCES patients(id)
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'staff',
+      active INTEGER NOT NULL DEFAULT 1
+    );
   `);
 
   migrateSchema();
@@ -115,6 +123,16 @@ function migrateSchema() {
   const pmpCols = db.exec("PRAGMA table_info(patient_meal_prices)")[0]?.values.map(r => r[1]) ?? [];
   if (!pmpCols.includes('meal_cap'))
     db.run("ALTER TABLE patient_meal_prices ADD COLUMN meal_cap INTEGER NOT NULL DEFAULT 0");
+
+  seedAdminUser();
+}
+
+function seedAdminUser() {
+  const bcrypt = require('bcryptjs');
+  const count = db.exec('SELECT COUNT(*) FROM users')[0]?.values[0][0];
+  if (count > 0) return;
+  const hash = bcrypt.hashSync('admin123', 10);
+  db.run("INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')", [hash]);
 }
 
 function seedInitialData() {

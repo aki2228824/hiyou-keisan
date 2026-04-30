@@ -7,20 +7,40 @@
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
+
+<!-- ログインオーバーレイ -->
+<div id="login-overlay" class="login-overlay hidden">
+  <div class="login-box">
+    <h2>ログイン</h2>
+    <p class="login-title">療養介護サービス提供実績記録票</p>
+    <div id="login-error" class="login-error hidden"></div>
+    <label>ユーザー名
+      <input type="text" id="login-username" autocomplete="username">
+    </label>
+    <label>パスワード
+      <input type="password" id="login-password" autocomplete="current-password">
+    </label>
+    <button onclick="doLogin()" class="btn-primary login-btn">ログイン</button>
+  </div>
+</div>
+
 <header>
   <h1>療養介護サービス提供実績記録票</h1>
-  <nav>
+  <nav id="main-nav">
     <button onclick="showPage('input')" class="nav-btn" id="nav-input">日次入力</button>
     <button onclick="showPage('summary')" class="nav-btn" id="nav-summary">月次集計</button>
     <button onclick="showPage('master')" class="nav-btn" id="nav-master">マスタ管理</button>
   </nav>
+  <div class="header-user">
+    <span id="header-username"></span>
+    <button onclick="doLogout()" class="btn-logout">ログアウト</button>
+  </div>
 </header>
 
 <main>
   <!-- 日次入力ページ -->
   <section id="page-input" class="page">
     <div class="input-layout">
-      <!-- 左：病棟・患者・日付選択 -->
       <div class="input-sidebar">
         <div id="ward-buttons" class="ward-buttons"></div>
         <div class="date-row">
@@ -29,7 +49,6 @@
         </div>
         <div id="patient-list" class="patient-list"></div>
       </div>
-      <!-- 右：入力フォーム -->
       <div class="input-main">
         <div id="input-form"></div>
       </div>
@@ -52,10 +71,12 @@
       <button onclick="showMasterTab('patients')" class="tab-btn active" id="mtab-patients">患者管理</button>
       <button onclick="showMasterTab('items')" class="tab-btn" id="mtab-items">物品管理</button>
       <button onclick="showMasterTab('prices')" class="tab-btn" id="mtab-prices">日用品単価</button>
+      <button onclick="showMasterTab('users')" class="tab-btn" id="mtab-users">ユーザー管理</button>
     </div>
     <div id="master-patients" class="master-tab"></div>
     <div id="master-items" class="master-tab hidden"></div>
     <div id="master-prices" class="master-tab hidden"></div>
+    <div id="master-users" class="master-tab hidden"></div>
   </section>
 </main>
 

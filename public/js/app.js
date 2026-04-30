@@ -1,9 +1,79 @@
+// ============================================================
+// 認証
+// ============================================================
+let currentUser = null;
+
+async function initAuth() {
+  const res = await fetch('/api/auth/me');
+  if (res.ok) {
+    currentUser = await res.json();
+    onLoggedIn();
+  } else {
+    showLoginOverlay();
+  }
+}
+
+function showLoginOverlay() {
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('login-username').focus();
+  document.getElementById('login-password').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+}
+
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.classList.add('hidden');
+
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (res.ok) {
+    currentUser = await res.json();
+    document.getElementById('login-overlay').classList.add('hidden');
+    onLoggedIn();
+  } else {
+    const data = await res.json();
+    errEl.textContent = data.error || 'ログインに失敗しました';
+    errEl.classList.remove('hidden');
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  currentUser = null;
+  location.reload();
+}
+
+function onLoggedIn() {
+  document.getElementById('header-username').textContent = `${currentUser.username}（${roleName(currentUser.role)}）`;
+  setupRoleUI();
+  const defaultPage = currentUser.role === 'viewer' ? 'summary' : 'input';
+  showPage(defaultPage);
+}
+
+function roleName(role) {
+  return { admin: '管理者', staff: '一般スタッフ', viewer: '閲覧のみ' }[role] ?? role;
+}
+
+function setupRoleUI() {
+  const role = currentUser.role;
+  // 日次入力：viewer は非表示
+  document.getElementById('nav-input').classList.toggle('hidden', role === 'viewer');
+  // マスタ管理：admin のみ
+  document.getElementById('nav-master').classList.toggle('hidden', role !== 'admin');
+}
+
 // --- ページ切り替え ---
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-' + name).classList.remove('hidden');
-  document.getElementById('nav-' + name).classList.add('active');
+  document.getElementById('nav-' + name)?.classList.add('active');
   if (name === 'input') initInputPage();
   if (name === 'summary') initSummaryPage();
   if (name === 'master') initMasterPage();
@@ -390,10 +460,10 @@ function showMasterTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('master-' + name).classList.remove('hidden');
   document.getElementById('mtab-' + name).classList.add('active');
-  if (name === 'patients')   renderMasterPatients();
-  if (name === 'items')      renderMasterItems();
-  if (name === 'prices')     renderMasterPrices();
-  if (name === 'mealprices') renderMasterMealPrices();
+  if (name === 'patients') renderMasterPatients();
+  if (name === 'items')    renderMasterItems();
+  if (name === 'prices')   renderMasterPrices();
+  if (name === 'users')    renderMasterUsers();
 }
 
 async function initMasterPage() {
@@ -534,6 +604,57 @@ async function savePrices() {
   showToast('単価を保存しました');
 }
 
+// --- ユーザー管理 ---
+async function renderMasterUsers() {
+  const users = await api('/users');
+  const roleOpts = (cur) => ['admin','staff','viewer'].map(r =>
+    `<option value="${r}" ${r===cur?'selected':''}>${roleName(r)}</option>`
+  ).join('');
+
+  const rows = users.map(u => `
+    <tr>
+      <td><input value="${u.username}" onblur="updateUser(${u.id},'username',this.value)"></td>
+      <td><select onchange="updateUser(${u.id},'role',this.value)">${roleOpts(u.role)}</select></td>
+      <td><input type="password" placeholder="変更する場合のみ入力"
+           onblur="if(this.value) updateUserPassword(${u.id},this.value)"></td>
+      <td><label><input type="checkbox" ${u.active?'checked':''} onchange="updateUser(${u.id},'active',this.checked?1:0)"> 有効</label></td>
+    </tr>`).join('');
+
+  document.getElementById('master-users').innerHTML = `
+    <table class="master-table">
+      <thead><tr><th>ユーザー名</th><th>ロール</th><th>パスワード変更</th><th>状態</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="add-row">
+      <input id="new-u-name" placeholder="ユーザー名" style="width:120px">
+      <input type="password" id="new-u-pass" placeholder="パスワード" style="width:120px">
+      <select id="new-u-role">${roleOpts('staff')}</select>
+      <button onclick="addUser()" class="btn-primary">追加</button>
+    </div>`;
+}
+
+async function updateUser(id, field, value) {
+  const users = await api('/users');
+  const u = users.find(x => x.id == id);
+  if (!u) return;
+  u[field] = value;
+  await api(`/users/${id}`, { method: 'PUT', body: u });
+}
+
+async function updateUserPassword(id, password) {
+  await api(`/users/${id}`, { method: 'PUT', body: { password } });
+  showToast('パスワードを変更しました');
+}
+
+async function addUser() {
+  const username = document.getElementById('new-u-name').value.trim();
+  const password = document.getElementById('new-u-pass').value;
+  const role     = document.getElementById('new-u-role').value;
+  if (!username || !password) return alert('ユーザー名とパスワードを入力してください');
+  await api('/users', { method: 'POST', body: { username, password, role } });
+  renderMasterUsers();
+}
+
 // ============================================================
 // ユーティリティ
 // ============================================================
@@ -549,5 +670,5 @@ function closeModal() {
   document.getElementById('modal').classList.add('hidden');
 }
 
-// 初期表示
-showPage('input');
+// 初期表示（認証確認）
+initAuth();
