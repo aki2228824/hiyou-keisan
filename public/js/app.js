@@ -158,6 +158,9 @@ async function loadInputForm() {
     initMealTotals.lunch     * (mealPrices.lunch_price    || 0) +
     initMealTotals.dinner    * (mealPrices.dinner_price   || 0);
 
+  const initItemCost = activeItems.reduce((sum, item) =>
+    sum + (initItemTotals[item.id] || 0) * (item.unit_price || 0), 0);
+
   document.getElementById('input-form').innerHTML = `
     <div class="monthly-card">
       <div class="monthly-header">
@@ -170,6 +173,7 @@ async function loadInputForm() {
         <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${mealPrices.lunch_price||''}"     placeholder="0"> 円</label>
         <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${mealPrices.dinner_price||''}"    placeholder="0"> 円</label>
         <button onclick="saveMealPrices('${patientId}','${year}','${month}')" class="btn-sm">単価保存</button>
+        <span class="item-cost-disp">日用品費合計：<strong id="item-cost-total">${initItemCost.toLocaleString()}</strong> 円</span>
         <span class="meal-cost-disp">食事費合計：<strong id="meal-cost-total">${initMealCost.toLocaleString()}</strong> 円</span>
       </div>
       <div class="table-scroll">
@@ -223,12 +227,16 @@ function updateSubtotals(activeItems) {
     document.getElementById(mealIds[i]).textContent = sum || '';
   });
 
+  let itemCostTotal = 0;
   for (const item of activeItems) {
     let sum = 0;
     document.querySelectorAll(`[data-item="${item.id}"]`).forEach(el => { sum += Number(el.value) || 0; });
     const cell = document.getElementById(`tot-item-${item.id}`);
     if (cell) cell.textContent = sum || '';
+    itemCostTotal += sum * (item.unit_price || 0);
   }
+  const itemCostEl = document.getElementById('item-cost-total');
+  if (itemCostEl) itemCostEl.textContent = itemCostTotal.toLocaleString();
 
   updateMealCostTotal();
 }

@@ -213,9 +213,19 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   padding: 4px 6px;
   font-size: 13px;
 }
-.meal-cost-disp {
+.item-cost-disp {
   font-size: 13px;
   margin-left: auto;
+  white-space: nowrap;
+  padding-right: 20px;
+  border-right: 1px solid #c8d4ee;
+}
+.item-cost-disp strong {
+  color: #2c5f8a;
+  font-size: 14px;
+}
+.meal-cost-disp {
+  font-size: 13px;
   white-space: nowrap;
 }
 .meal-cost-disp strong {
