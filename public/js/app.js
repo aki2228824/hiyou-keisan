@@ -212,6 +212,15 @@ async function loadInputForm() {
   // 入力のたびに小計を再計算
   document.getElementById('monthly-tbl').addEventListener('input', () => updateSubtotals(activeItems));
 
+  // Enterキーで次の入力欄へ移動
+  document.getElementById('monthly-tbl').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const inputs = [...document.querySelectorAll('#monthly-tbl .cell-input')];
+    const idx = inputs.indexOf(e.target);
+    if (idx >= 0 && idx < inputs.length - 1) inputs[idx + 1].focus();
+  });
+
   // 食事単価・上限変更時に食事費合計を即時更新
   ['mp-breakfast', 'mp-lunch', 'mp-dinner', 'mp-cap'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', updateMealCostTotal);
