@@ -160,6 +160,8 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .input-sidebar {
   width: 160px;
   flex-shrink: 0;
+  border-right: 1px solid #C8B8A8;
+  padding-right: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
