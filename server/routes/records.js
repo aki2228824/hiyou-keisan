@@ -90,17 +90,20 @@ router.get('/summary', (req, res) => {
   const mealPrices = db.query(
     'SELECT * FROM patient_meal_prices WHERE patient_id=? AND year=? AND month=?',
     [patient_id, year, month]
-  )[0] || { breakfast_price: 0, lunch_price: 0, dinner_price: 0 };
+  )[0] || { breakfast_price: 0, lunch_price: 0, dinner_price: 0, meal_cap: 0 };
 
-  const mealCost =
+  const rawMealCost =
     (mealTotals.breakfast || 0) * (mealPrices.breakfast_price || 0) +
     (mealTotals.lunch    || 0) * (mealPrices.lunch_price    || 0) +
     (mealTotals.dinner   || 0) * (mealPrices.dinner_price   || 0);
 
+  const mealCap = mealPrices.meal_cap || 0;
+  const mealCost = mealCap > 0 ? Math.min(rawMealCost, mealCap) : rawMealCost;
+
   const itemTotal  = totals.reduce((s, r) => s + (r.subtotal || 0), 0);
   const grandTotal = itemTotal + mealCost;
 
-  res.json({ totals, mealTotals, mealPrices, mealCost, itemTotal, grandTotal });
+  res.json({ totals, mealTotals, mealPrices, rawMealCost, mealCost, mealCap, itemTotal, grandTotal });
 });
 
 module.exports = router;

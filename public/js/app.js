@@ -172,9 +172,10 @@ async function loadInputForm() {
         <label>朝食 <input type="number" min="0" id="mp-breakfast" value="${mealPrices.breakfast_price||''}" placeholder="0"> 円</label>
         <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${mealPrices.lunch_price||''}"     placeholder="0"> 円</label>
         <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${mealPrices.dinner_price||''}"    placeholder="0"> 円</label>
+        <label>食事費上限 <input type="number" min="0" id="mp-cap" value="${mealPrices.meal_cap||''}" placeholder="上限なし"> 円</label>
         <button onclick="saveMealPrices('${patientId}','${year}','${month}')" class="btn-sm">単価保存</button>
         <span class="item-cost-disp">日用品費合計：<strong id="item-cost-total">${initItemCost.toLocaleString()}</strong> 円</span>
-        <span class="meal-cost-disp">食事費合計：<strong id="meal-cost-total">${initMealCost.toLocaleString()}</strong> 円</span>
+        <span class="meal-cost-disp">食事費合計：<strong id="meal-cost-total">${initMealCost.toLocaleString()}</strong> 円<span id="meal-cap-label" class="cap-label"></span></span>
       </div>
       <div class="table-scroll">
         <table class="monthly-table" id="monthly-tbl">
@@ -211,10 +212,13 @@ async function loadInputForm() {
   // 入力のたびに小計を再計算
   document.getElementById('monthly-tbl').addEventListener('input', () => updateSubtotals(activeItems));
 
-  // 食事単価変更時に食事費合計を即時更新
-  ['mp-breakfast', 'mp-lunch', 'mp-dinner'].forEach(id => {
+  // 食事単価・上限変更時に食事費合計を即時更新
+  ['mp-breakfast', 'mp-lunch', 'mp-dinner', 'mp-cap'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', updateMealCostTotal);
   });
+
+  // 初期表示で上限ラベルを更新
+  updateMealCostTotal();
 }
 
 function updateSubtotals(activeItems) {
@@ -245,14 +249,20 @@ function updateMealCostTotal() {
   const bPrice = Number(document.getElementById('mp-breakfast')?.value) || 0;
   const lPrice = Number(document.getElementById('mp-lunch')?.value)     || 0;
   const dPrice = Number(document.getElementById('mp-dinner')?.value)    || 0;
+  const cap    = Number(document.getElementById('mp-cap')?.value)       || 0;
 
   const bCount = Number(document.getElementById('tot-breakfast')?.textContent) || 0;
   const lCount = Number(document.getElementById('tot-lunch')?.textContent)     || 0;
   const dCount = Number(document.getElementById('tot-dinner')?.textContent)    || 0;
 
-  const cost = bCount * bPrice + lCount * lPrice + dCount * dPrice;
+  const rawCost = bCount * bPrice + lCount * lPrice + dCount * dPrice;
+  const cost = cap > 0 ? Math.min(rawCost, cap) : rawCost;
+
   const el = document.getElementById('meal-cost-total');
   if (el) el.textContent = cost.toLocaleString();
+
+  const capLabel = document.getElementById('meal-cap-label');
+  if (capLabel) capLabel.textContent = (cap > 0 && rawCost > cap) ? '（上限適用）' : '';
 }
 
 async function saveMealPrices(patientId, year, month) {
@@ -263,6 +273,7 @@ async function saveMealPrices(patientId, year, month) {
     breakfast_price: Number(document.getElementById('mp-breakfast').value) || 0,
     lunch_price:     Number(document.getElementById('mp-lunch').value)     || 0,
     dinner_price:    Number(document.getElementById('mp-dinner').value)    || 0,
+    meal_cap:        Number(document.getElementById('mp-cap').value)       || 0,
   }});
   updateMealCostTotal();
   showToast('食事単価を保存しました');

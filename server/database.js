@@ -111,6 +111,10 @@ function migrateSchema() {
     db.run("ALTER TABLE meal_records ADD COLUMN hospital_addition INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes('hospital_special'))
     db.run("ALTER TABLE meal_records ADD COLUMN hospital_special INTEGER NOT NULL DEFAULT 0");
+
+  const pmpCols = db.exec("PRAGMA table_info(patient_meal_prices)")[0]?.values.map(r => r[1]) ?? [];
+  if (!pmpCols.includes('meal_cap'))
+    db.run("ALTER TABLE patient_meal_prices ADD COLUMN meal_cap INTEGER NOT NULL DEFAULT 0");
 }
 
 function seedInitialData() {

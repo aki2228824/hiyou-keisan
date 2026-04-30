@@ -37,15 +37,16 @@ router.get('/bulk', (req, res) => {
 
 // 単価を保存（UPSERT）
 router.post('/', (req, res) => {
-  const { patient_id, year, month, breakfast_price, lunch_price, dinner_price } = req.body;
+  const { patient_id, year, month, breakfast_price, lunch_price, dinner_price, meal_cap } = req.body;
   db.run(`
-    INSERT INTO patient_meal_prices (patient_id, year, month, breakfast_price, lunch_price, dinner_price)
-    VALUES (?,?,?,?,?,?)
+    INSERT INTO patient_meal_prices (patient_id, year, month, breakfast_price, lunch_price, dinner_price, meal_cap)
+    VALUES (?,?,?,?,?,?,?)
     ON CONFLICT(patient_id, year, month) DO UPDATE SET
       breakfast_price=excluded.breakfast_price,
       lunch_price=excluded.lunch_price,
-      dinner_price=excluded.dinner_price
-  `, [patient_id, year, month, breakfast_price ?? 0, lunch_price ?? 0, dinner_price ?? 0]);
+      dinner_price=excluded.dinner_price,
+      meal_cap=excluded.meal_cap
+  `, [patient_id, year, month, breakfast_price ?? 0, lunch_price ?? 0, dinner_price ?? 0, meal_cap ?? 0]);
   res.json({ ok: true });
 });
 
