@@ -105,7 +105,7 @@ async function loadInputForm() {
 
   // ヘッダー
   const itemHeaders = activeItems.map(item =>
-    `<th class="col-item" title="${item.unit_price.toLocaleString()}円">${item.name}</th>`
+    `<th class="col-item">${item.name}<br><span class="item-price-sub">${item.unit_price.toLocaleString()}円</span></th>`
   ).join('');
 
   // 行
