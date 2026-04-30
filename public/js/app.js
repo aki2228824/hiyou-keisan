@@ -613,16 +613,16 @@ async function renderMasterUsers() {
 
   const rows = users.map(u => `
     <tr>
-      <td><input value="${u.username}" onblur="updateUser(${u.id},'username',this.value)"></td>
-      <td><select onchange="updateUser(${u.id},'role',this.value)">${roleOpts(u.role)}</select></td>
-      <td><input type="password" placeholder="変更する場合のみ入力"
-           onblur="if(this.value) updateUserPassword(${u.id},this.value)"></td>
-      <td><label><input type="checkbox" ${u.active?'checked':''} onchange="updateUser(${u.id},'active',this.checked?1:0)"> 有効</label></td>
+      <td><input id="u-name-${u.id}" value="${u.username}" style="width:110px"></td>
+      <td><select id="u-role-${u.id}">${roleOpts(u.role)}</select></td>
+      <td><input type="password" id="u-pass-${u.id}" placeholder="変更する場合のみ入力" style="width:150px"></td>
+      <td><label><input type="checkbox" id="u-active-${u.id}" ${u.active?'checked':''}> 有効</label></td>
+      <td><button onclick="saveUser(${u.id})" class="btn-sm btn-register">登録</button></td>
     </tr>`).join('');
 
   document.getElementById('master-users').innerHTML = `
     <table class="master-table">
-      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード変更（全ユーザー編集可）</th><th>状態</th></tr></thead>
+      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="add-row">
@@ -633,17 +633,19 @@ async function renderMasterUsers() {
     </div>`;
 }
 
-async function updateUser(id, field, value) {
-  const users = await api('/users');
-  const u = users.find(x => x.id == id);
-  if (!u) return;
-  u[field] = value;
-  await api(`/users/${id}`, { method: 'PUT', body: u });
-}
+async function saveUser(id) {
+  const username = document.getElementById(`u-name-${id}`).value.trim();
+  const password = document.getElementById(`u-pass-${id}`).value;
+  const role     = document.getElementById(`u-role-${id}`).value;
+  const active   = document.getElementById(`u-active-${id}`).checked ? 1 : 0;
+  if (!username) return alert('ユーザーIDを入力してください');
 
-async function updateUserPassword(id, password) {
-  await api(`/users/${id}`, { method: 'PUT', body: { password } });
-  showToast('パスワードを変更しました');
+  const body = { username, role, active };
+  if (password) body.password = password;
+
+  await api(`/users/${id}`, { method: 'PUT', body });
+  document.getElementById(`u-pass-${id}`).value = '';
+  showToast(`「${username}」の情報を更新しました`);
 }
 
 async function addUser() {

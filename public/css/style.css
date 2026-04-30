@@ -144,6 +144,11 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   border-radius: 3px;
   cursor: pointer;
 }
+.btn-register {
+  background: #28a745;
+  padding: 5px 14px;
+}
+.btn-register:hover { background: #1e7e34; }
 
 /* 日次入力：サイドバーレイアウト */
 .input-layout {
