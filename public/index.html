@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>費用計算システム</title>
+<title>療養介護サービス提供実績記録票</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
 <header>
-  <h1>入院患者 日用品費計算システム</h1>
+  <h1>療養介護サービス提供実績記録票</h1>
   <nav>
     <button onclick="showPage('input')" class="nav-btn" id="nav-input">日次入力</button>
     <button onclick="showPage('summary')" class="nav-btn" id="nav-summary">月次集計</button>
@@ -51,7 +51,7 @@
     <div class="tab-bar">
       <button onclick="showMasterTab('patients')" class="tab-btn active" id="mtab-patients">患者管理</button>
       <button onclick="showMasterTab('items')" class="tab-btn" id="mtab-items">物品管理</button>
-      <button onclick="showMasterTab('prices')" class="tab-btn" id="mtab-prices">単価設定</button>
+      <button onclick="showMasterTab('prices')" class="tab-btn" id="mtab-prices">日用品単価</button>
     </div>
     <div id="master-patients" class="master-tab"></div>
     <div id="master-items" class="master-tab hidden"></div>
