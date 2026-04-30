@@ -34,6 +34,14 @@ router.get('/prices', (req, res) => {
   res.json(rows);
 });
 
+router.delete('/:id', requireRole('admin'), (req, res) => {
+  const id = req.params.id;
+  db.run('DELETE FROM records WHERE item_id=?', [id]);
+  db.run('DELETE FROM prices WHERE item_id=?', [id]);
+  db.run('DELETE FROM items WHERE id=?', [id]);
+  res.json({ ok: true });
+});
+
 // 単価を設定（UPSERT）
 router.post('/prices', requireRole('admin'), (req, res) => {
   const { item_id, year, month, unit_price } = req.body;

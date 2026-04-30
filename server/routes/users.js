@@ -28,4 +28,11 @@ router.put('/:id', requireRole('admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+router.delete('/:id', requireRole('admin'), (req, res) => {
+  if (req.session.user.id == req.params.id)
+    return res.status(400).json({ error: '自分自身は削除できません' });
+  db.run('DELETE FROM users WHERE id=?', [req.params.id]);
+  res.json({ ok: true });
+});
+
 module.exports = router;

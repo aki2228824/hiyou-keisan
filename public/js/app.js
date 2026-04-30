@@ -493,6 +493,7 @@ async function renderMasterPatients() {
       <td><input value="${p.room||''}" onblur="updatePatient(${p.id},'room',this.value)" style="width:60px"></td>
       <td><input value="${p.beneficiary_no||''}" onblur="updatePatient(${p.id},'beneficiary_no',this.value)"></td>
       <td><label><input type="checkbox" ${p.active?'checked':''} onchange="updatePatient(${p.id},'active',this.checked?1:0)"> 有効</label></td>
+      <td><button onclick="deletePatient(${p.id},'${p.name.replace(/'/g,'&#39;')}')" class="btn-danger">削除</button></td>
     </tr>`).join('');
 
   const mainContent = selectedMasterWardId ? `
@@ -503,7 +504,7 @@ async function renderMasterPatients() {
       <button onclick="addPatient()" class="btn-primary">追加</button>
     </div>
     <table class="master-table">
-      <thead><tr><th>病棟</th><th>氏名</th><th>部屋</th><th>受給者証番号</th><th>状態</th></tr></thead>
+      <thead><tr><th>病棟</th><th>氏名</th><th>部屋</th><th>受給者証番号</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>` : '<p class="no-patient">病棟を選択してください</p>';
 
@@ -529,6 +530,12 @@ async function updatePatient(id, field, value) {
   await api(`/patients/${id}`, { method: 'PUT', body: p });
 }
 
+async function deletePatient(id, name) {
+  if (!confirm(`「${name}」を削除しますか？\nこの患者の全実績データも削除されます。`)) return;
+  await api(`/patients/${id}`, { method: 'DELETE' });
+  renderMasterPatients();
+}
+
 async function addPatient() {
   const name           = document.getElementById('new-p-name').value.trim();
   const room           = document.getElementById('new-p-room').value.trim();
@@ -547,11 +554,12 @@ async function renderMasterItems() {
            onblur="updateItem(${item.id},'sort_order',this.value)"></td>
       <td><input value="${item.name}" onblur="updateItem(${item.id},'name',this.value)"></td>
       <td><label><input type="checkbox" ${item.active?'checked':''} onchange="updateItem(${item.id},'active',this.checked?1:0)"> 有効</label></td>
+      <td><button onclick="deleteItem(${item.id},'${item.name.replace(/'/g,'&#39;')}')" class="btn-danger">削除</button></td>
     </tr>`).join('');
 
   document.getElementById('master-items').innerHTML = `
     <table class="master-table">
-      <thead><tr><th>順序</th><th>物品名</th><th>状態</th></tr></thead>
+      <thead><tr><th>順序</th><th>物品名</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="add-row">
@@ -566,6 +574,12 @@ async function updateItem(id, field, value) {
   if (!item) return;
   item[field] = value;
   await api(`/items/${id}`, { method: 'PUT', body: item });
+}
+
+async function deleteItem(id, name) {
+  if (!confirm(`「${name}」を削除しますか？\nこの物品の全実績データも削除されます。`)) return;
+  await api(`/items/${id}`, { method: 'DELETE' });
+  renderMasterItems();
 }
 
 async function addItem() {
@@ -638,11 +652,12 @@ async function renderMasterUsers() {
       <td><input type="password" id="u-pass-${u.id}" placeholder="変更する場合のみ入力" style="width:150px"></td>
       <td><label><input type="checkbox" id="u-active-${u.id}" ${u.active?'checked':''}> 有効</label></td>
       <td><button onclick="saveUser(${u.id})" class="btn-sm btn-register">登録</button></td>
+      <td><button onclick="deleteUser(${u.id},'${u.username.replace(/'/g,'&#39;')}')" class="btn-danger">削除</button></td>
     </tr>`).join('');
 
   document.getElementById('master-users').innerHTML = `
     <table class="master-table">
-      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th></tr></thead>
+      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="add-row">
@@ -666,6 +681,13 @@ async function saveUser(id) {
   await api(`/users/${id}`, { method: 'PUT', body });
   document.getElementById(`u-pass-${id}`).value = '';
   showToast(`「${username}」の情報を更新しました`);
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`ユーザー「${username}」を削除しますか？`)) return;
+  const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+  if (!res.ok) { const d = await res.json(); return alert(d.error); }
+  renderMasterUsers();
 }
 
 async function addUser() {

@@ -26,4 +26,13 @@ router.put('/:id', requireRole('admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+router.delete('/:id', requireRole('admin'), (req, res) => {
+  const id = req.params.id;
+  db.run('DELETE FROM records WHERE patient_id=?', [id]);
+  db.run('DELETE FROM meal_records WHERE patient_id=?', [id]);
+  db.run('DELETE FROM patient_meal_prices WHERE patient_id=?', [id]);
+  db.run('DELETE FROM patients WHERE id=?', [id]);
+  res.json({ ok: true });
+});
+
 module.exports = router;
