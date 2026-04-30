@@ -442,6 +442,9 @@ table.master-table {
 }
 .master-table th { background: #f0f0f0; text-align: left; }
 .master-table input { width: 100%; padding: 4px; border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
+.master-table td { vertical-align: middle; }
+.master-table td label { display: flex; align-items: center; gap: 4px; }
+.master-table td label input[type="checkbox"] { margin: 0; width: auto; }
 
 .add-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 
