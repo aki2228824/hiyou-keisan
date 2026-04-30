@@ -21,16 +21,22 @@ router.put('/:id', requireRole('admin'), (req, res) => {
   res.json({ ok: true });
 });
 
-// 単価一覧取得
+// 単価一覧取得（指定月になければ直近の設定を引き継ぐ）
 router.get('/prices', (req, res) => {
   const { year, month } = req.query;
   const rows = db.query(`
     SELECT i.id, i.name, i.sort_order, i.active,
-           COALESCE(p.unit_price, 0) as unit_price
+           COALESCE(
+             (SELECT unit_price FROM prices
+              WHERE item_id=i.id AND year=? AND month=?),
+             (SELECT unit_price FROM prices
+              WHERE item_id=i.id AND (year*100+month) < ?*100+?
+              ORDER BY year DESC, month DESC LIMIT 1),
+             0
+           ) as unit_price
     FROM items i
-    LEFT JOIN prices p ON p.item_id=i.id AND p.year=? AND p.month=?
     ORDER BY i.sort_order, i.id
-  `, [year, month]);
+  `, [year, month, year, month]);
   res.json(rows);
 });
 
