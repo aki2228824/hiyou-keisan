@@ -656,16 +656,16 @@ async function renderMasterUsers() {
     </tr>`).join('');
 
   document.getElementById('master-users').innerHTML = `
-    <table class="master-table">
-      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="add-row">
+    <div class="add-row" style="justify-content:flex-end">
       <input id="new-u-name" placeholder="ユーザーID" style="width:120px">
       <input type="password" id="new-u-pass" placeholder="パスワード" style="width:120px">
       <select id="new-u-role">${roleOpts('staff')}</select>
       <button onclick="addUser()" class="btn-primary">追加</button>
-    </div>`;
+    </div>
+    <table class="master-table">
+      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 }
 
 async function saveUser(id) {
