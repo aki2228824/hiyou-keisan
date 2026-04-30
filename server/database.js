@@ -94,7 +94,7 @@ function seedInitialData() {
   const wardCount = db.exec('SELECT COUNT(*) as cnt FROM wards')[0]?.values[0][0];
   if (wardCount > 0) return;
 
-  db.run(`INSERT INTO wards (name) VALUES ('3階病棟'), ('4階病棟'), ('5階病棟');`);
+  db.run(`INSERT INTO wards (name) VALUES ('2階病棟'), ('3階病棟'), ('4階病棟');`);
 
   const items = [
     ['入浴', 1, 46],
