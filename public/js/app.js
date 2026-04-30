@@ -22,15 +22,18 @@ async function api(path, opts = {}) {
 // ============================================================
 // 日次入力
 // ============================================================
-let selectedWardId   = null;
+let selectedWardId    = null;
 let selectedPatientId = null;
+
+const DOW = ['日','月','火','水','木','金','土'];
 
 async function initInputPage() {
   const wards = await api('/wards');
 
-  const today = new Date().toISOString().slice(0,10);
-  if (!document.getElementById('sel-date').value)
-    document.getElementById('sel-date').value = today;
+  const now = new Date();
+  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  if (!document.getElementById('sel-month').value)
+    document.getElementById('sel-month').value = defaultMonth;
 
   document.getElementById('ward-buttons').innerHTML = wards.map(w => `
     <button class="ward-btn ${selectedWardId==w.id?'active':''}"
@@ -71,60 +74,119 @@ async function selectPatient(patientId) {
 
 async function loadInputForm() {
   const patientId = selectedPatientId;
-  const date      = document.getElementById('sel-date').value;
-  if (!patientId || !date) return;
+  const ym = document.getElementById('sel-month').value;
+  if (!patientId || !ym) return;
 
-  const [y, m] = date.split('-');
+  const [year, month] = ym.split('-');
   const [itemsWithPrices, existing] = await Promise.all([
-    api(`/items/prices?year=${y}&month=${m}`),
-    api(`/records?patient_id=${patientId}&year=${y}&month=${m}`)
+    api(`/items/prices?year=${year}&month=${month}`),
+    api(`/records?patient_id=${patientId}&year=${year}&month=${month}`)
   ]);
-
-  const recMap = {};
-  for (const r of existing.records) {
-    if (r.record_date === date) recMap[r.item_id] = r.quantity;
-  }
-  const meal = existing.meals.find(m => m.record_date === date) || {};
 
   const activeItems = itemsWithPrices.filter(i => i.active);
 
-  const itemsHtml = activeItems.map(item => `
-    <div class="item-cell">
-      <label>${item.name}</label>
-      <span class="price-hint">${item.unit_price.toLocaleString()}円/回</span>
-      <input type="number" min="0" value="${recMap[item.id] ?? 0}"
-             id="item-${item.id}" data-id="${item.id}">
-    </div>`).join('');
+  // 既存データをマップ化
+  const recMap = {};   // recMap[date][item_id] = quantity
+  for (const r of existing.records) {
+    if (!recMap[r.record_date]) recMap[r.record_date] = {};
+    recMap[r.record_date][r.item_id] = r.quantity;
+  }
+  const mealMap = {};  // mealMap[date] = {breakfast, lunch, dinner, note}
+  for (const m of existing.meals) mealMap[m.record_date] = m;
+
+  // 月の日数
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, i) => {
+    const d = i + 1;
+    const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dow = new Date(dateStr).getDay();
+    return { d, dateStr, dow };
+  });
+
+  // ヘッダー
+  const itemHeaders = activeItems.map(item =>
+    `<th class="col-item" title="${item.unit_price.toLocaleString()}円">${item.name}</th>`
+  ).join('');
+
+  // 行
+  const rows = days.map(({ d, dateStr, dow }) => {
+    const meal = mealMap[dateStr] || {};
+    const isWeekend = dow === 0 || dow === 6;
+    const itemCells = activeItems.map(item => {
+      const val = recMap[dateStr]?.[item.id] ?? 0;
+      return `<td><input type="number" min="0" class="cell-input" value="${val||''}"
+               data-date="${dateStr}" data-item="${item.id}"></td>`;
+    }).join('');
+    return `<tr class="${isWeekend?'weekend':''}">
+      <td class="col-day">${d}</td>
+      <td class="col-dow ${dow===0?'sun':dow===6?'sat':''}">${DOW[dow]}</td>
+      <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.breakfast??''}"
+           data-date="${dateStr}" data-meal="breakfast" placeholder="0"></td>
+      <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.lunch??''}"
+           data-date="${dateStr}" data-meal="lunch" placeholder="0"></td>
+      <td><input type="number" min="0" max="1" class="cell-input meal-input" value="${meal.dinner??''}"
+           data-date="${dateStr}" data-meal="dinner" placeholder="0"></td>
+      <td><input type="text" class="cell-input note-input" value="${meal.note??''}"
+           data-date="${dateStr}" data-meal="note"></td>
+      ${itemCells}
+    </tr>`;
+  }).join('');
 
   document.getElementById('input-form').innerHTML = `
-    <div class="input-card">
-      <h2>${date} の実績入力</h2>
-      <div class="meal-section">
-        <strong>食事回数：</strong>
-        <label>朝 <input type="number" min="0" max="1" id="m-breakfast" value="${meal.breakfast??0}"></label>
-        <label>昼 <input type="number" min="0" max="1" id="m-lunch" value="${meal.lunch??0}"></label>
-        <label>夕 <input type="number" min="0" max="1" id="m-dinner" value="${meal.dinner??0}"></label>
-        <label>備考 <input type="text" id="m-note" value="${meal.note??''}" style="width:100px"></label>
+    <div class="monthly-card">
+      <div class="monthly-header">
+        <span class="monthly-title">${year}年${Number(month)}月　実績入力</span>
+        <button onclick="saveAllRecords()" class="btn-primary">一括保存</button>
       </div>
-      <div class="items-grid">${itemsHtml}</div>
-      <div class="save-row">
-        <button onclick="saveRecord('${patientId}','${date}')" class="btn-primary">保存</button>
+      <div class="table-scroll">
+        <table class="monthly-table">
+          <thead>
+            <tr>
+              <th class="col-day">日</th>
+              <th class="col-dow">曜</th>
+              <th class="col-meal">朝</th>
+              <th class="col-meal">昼</th>
+              <th class="col-meal">夕</th>
+              <th class="col-note">備考</th>
+              ${itemHeaders}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>
     </div>`;
 }
 
-async function saveRecord(patientId, date) {
-  const items = [...document.querySelectorAll('[data-id]')].map(el => ({
-    item_id: Number(el.dataset.id),
-    quantity: Number(el.value) || 0
-  }));
-  const meal = {
-    breakfast: Number(document.getElementById('m-breakfast').value)||0,
-    lunch:     Number(document.getElementById('m-lunch').value)||0,
-    dinner:    Number(document.getElementById('m-dinner').value)||0,
-    note:      document.getElementById('m-note').value,
-  };
-  await api('/records', { method: 'POST', body: { patient_id: patientId, record_date: date, items, meal } });
+async function saveAllRecords() {
+  const patientId = selectedPatientId;
+  if (!patientId) return;
+
+  // 日付ごとにまとめる
+  const byDate = {};
+
+  document.querySelectorAll('.cell-input[data-item]').forEach(el => {
+    const date = el.dataset.date;
+    const itemId = Number(el.dataset.item);
+    const qty = Number(el.value) || 0;
+    if (!byDate[date]) byDate[date] = { items: [], meal: {} };
+    byDate[date].items.push({ item_id: itemId, quantity: qty });
+  });
+
+  document.querySelectorAll('.cell-input[data-meal]').forEach(el => {
+    const date = el.dataset.date;
+    const field = el.dataset.meal;
+    if (!byDate[date]) byDate[date] = { items: [], meal: {} };
+    byDate[date].meal[field] = field === 'note' ? el.value : (Number(el.value) || 0);
+  });
+
+  for (const [date, data] of Object.entries(byDate)) {
+    await api('/records', { method: 'POST', body: {
+      patient_id: patientId,
+      record_date: date,
+      items: data.items,
+      meal: data.meal,
+    }});
+  }
   showToast('保存しました');
 }
 
