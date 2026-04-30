@@ -1,10 +1,10 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; background: #f5f6fa; color: #333; }
+body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; background: #FBF6F1; color: #333; }
 
 /* ログインオーバーレイ */
 .login-overlay {
   position: fixed; inset: 0;
-  background: #1a3a5c;
+  background: #3D1F0A;
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }
@@ -18,7 +18,7 @@ body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; backgrou
   gap: 14px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
-.login-box h2 { font-size: 20px; color: #2c5f8a; text-align: center; }
+.login-box h2 { font-size: 20px; color: #8B5E3C; text-align: center; }
 .login-title { font-size: 12px; color: #888; text-align: center; margin-top: -8px; }
 .login-box label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #555; }
 .login-box input { padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
@@ -26,7 +26,7 @@ body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; backgrou
 .login-error { background: #fdecea; color: #c00; padding: 8px 12px; border-radius: 4px; font-size: 13px; }
 
 header {
-  background: #2c5f8a;
+  background: #8B5E3C;
   color: white;
   padding: 10px 20px;
   display: flex;
@@ -94,14 +94,14 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 
 .btn-primary {
   padding: 7px 18px;
-  background: #2c5f8a;
+  background: #8B5E3C;
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
 }
-.btn-primary:hover { background: #1e4a6f; }
+.btn-primary:hover { background: #6D4228; }
 
 .btn-secondary {
   padding: 7px 18px;
@@ -138,7 +138,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .btn-sm {
   padding: 4px 10px;
   font-size: 12px;
-  background: #2c5f8a;
+  background: #8B5E3C;
   color: white;
   border: none;
   border-radius: 3px;
@@ -183,8 +183,8 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   color: #555;
   transition: all 0.15s;
 }
-.ward-btn:hover { border-color: #2c5f8a; color: #2c5f8a; }
-.ward-btn.active { background: #2c5f8a; border-color: #2c5f8a; color: white; }
+.ward-btn:hover { border-color: #8B5E3C; color: #8B5E3C; }
+.ward-btn.active { background: #8B5E3C; border-color: #8B5E3C; color: white; }
 
 .date-row {
   display: flex;
@@ -213,8 +213,8 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   text-align: left;
   transition: all 0.15s;
 }
-.patient-btn:hover { background: #e8f0ff; border-color: #2c5f8a; }
-.patient-btn.active { background: #ddeeff; border-color: #2c5f8a; font-weight: bold; }
+.patient-btn:hover { background: #F5EBE0; border-color: #8B5E3C; }
+.patient-btn.active { background: #EDD9C5; border-color: #8B5E3C; font-weight: bold; }
 
 .no-patient { font-size: 12px; color: #999; padding: 6px; }
 
@@ -232,23 +232,23 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 2px solid #2c5f8a;
+  border-bottom: 2px solid #8B5E3C;
 }
-.monthly-title { font-size: 15px; font-weight: bold; color: #2c5f8a; }
+.monthly-title { font-size: 15px; font-weight: bold; color: #8B5E3C; }
 
 .meal-price-bar {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 8px 14px;
-  background: #f0f4ff;
-  border-bottom: 1px solid #c8d4ee;
+  background: #FAF0E6;
+  border-bottom: 1px solid #DDD0BC;
   flex-wrap: wrap;
 }
 .meal-price-label {
   font-size: 12px;
   font-weight: bold;
-  color: #2c5f8a;
+  color: #8B5E3C;
   white-space: nowrap;
 }
 .meal-price-bar label {
@@ -270,7 +270,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   border-right: 1px solid #c8d4ee;
 }
 .item-cost-disp strong {
-  color: #2c5f8a;
+  color: #8B5E3C;
   font-size: 14px;
 }
 .meal-cost-disp {
@@ -305,7 +305,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   text-align: center;
 }
 .monthly-table thead th {
-  background: #2c5f8a;
+  background: #8B5E3C;
   color: white;
   position: sticky;
   top: 0;
@@ -314,9 +314,9 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   padding: 4px 5px;
   white-space: nowrap;
 }
-.monthly-table tbody tr:hover { background: #f0f4ff; }
-.monthly-table tbody tr.weekend { background: #fafaf5; }
-.monthly-table tbody tr.weekend:hover { background: #eeeeff; }
+.monthly-table tbody tr:hover { background: #F5EBE0; }
+.monthly-table tbody tr.weekend { background: #FAF5F0; }
+.monthly-table tbody tr.weekend:hover { background: #EDE0D5; }
 
 .col-day  { width: 28px; font-weight: bold; }
 .col-dow  { width: 24px; }
@@ -334,11 +334,28 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .col-item { white-space: nowrap; }
 .item-price-sub { font-size: 10px; font-weight: normal; opacity: 0.85; }
 
+/* 列グループ色分け */
+.monthly-table thead th.g-svc  { background: #4A7FB5; }
+.monthly-table thead th.g-meal { background: #5A8A5A; }
+.monthly-table thead th.g-item { background: #A07040; }
+.monthly-table tbody td.g-svc  { background: #EDF3FB; }
+.monthly-table tbody td.g-meal { background: #EDF7EE; }
+.monthly-table tbody td.g-item { background: #FAF3E8; }
+.monthly-table tbody tr.weekend td.g-svc  { background: #E3EDF7; }
+.monthly-table tbody tr.weekend td.g-meal { background: #E3F3E4; }
+.monthly-table tbody tr.weekend td.g-item { background: #F5EDE0; }
+.monthly-table tbody tr:hover td.g-svc  { background: #D5E7F5; }
+.monthly-table tbody tr:hover td.g-meal { background: #D5EFDA; }
+.monthly-table tbody tr:hover td.g-item { background: #EFE3D0; }
+.monthly-table tfoot td.g-svc  { background: #D8E8F5; border-top: 2px solid #4A7FB5; }
+.monthly-table tfoot td.g-meal { background: #D8F0DC; border-top: 2px solid #5A8A5A; }
+.monthly-table tfoot td.g-item { background: #F0E4D0; border-top: 2px solid #A07040; }
+
 /* 小計行 */
-.subtotal-row { background: #e8f0e8 !important; font-weight: bold; }
-.subtotal-row:hover { background: #d4e8d4 !important; }
-.subtotal-label { text-align: center; font-weight: bold; color: #2c5f8a; border-top: 2px solid #2c5f8a; }
-.subtotal-cell { text-align: right; border-top: 2px solid #2c5f8a; }
+.subtotal-row { background: #EDE0D0 !important; font-weight: bold; }
+.subtotal-row:hover { background: #E0D0C0 !important; }
+.subtotal-label { text-align: center; font-weight: bold; color: #8B5E3C; border-top: 2px solid #8B5E3C; }
+.subtotal-cell { text-align: right; border-top: 2px solid #8B5E3C; }
 
 .cell-input {
   width: 100%;
@@ -352,7 +369,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 }
 .cell-input:focus {
   background: #fffde7;
-  outline: 1px solid #2c5f8a;
+  outline: 1px solid #8B5E3C;
   border-radius: 2px;
 }
 
@@ -363,7 +380,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   padding: 16px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
-.input-card h2 { font-size: 15px; margin-bottom: 12px; color: #2c5f8a; border-bottom: 2px solid #2c5f8a; padding-bottom: 6px; }
+.input-card h2 { font-size: 15px; margin-bottom: 12px; color: #8B5E3C; border-bottom: 2px solid #8B5E3C; padding-bottom: 6px; }
 
 .items-grid {
   display: grid;
@@ -410,10 +427,10 @@ table.summary-table {
   padding: 6px 10px;
   white-space: nowrap;
 }
-.summary-table th { background: #2c5f8a; color: white; text-align: center; }
+.summary-table th { background: #8B5E3C; color: white; text-align: center; }
 .summary-table td.num { text-align: right; }
 .summary-table tr:nth-child(even) { background: #f8f9fa; }
-.summary-table tr:hover { background: #e8f0ff; }
+.summary-table tr:hover { background: #F5EBE0; }
 .summary-table td.grand { font-weight: bold; color: #c00; }
 
 /* マスタ管理 */
@@ -426,7 +443,7 @@ table.summary-table {
   cursor: pointer;
   font-size: 14px;
 }
-.tab-btn.active { background: #2c5f8a; color: white; }
+.tab-btn.active { background: #8B5E3C; color: white; }
 
 .master-tab { background: white; border-radius: 0 8px 8px 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 

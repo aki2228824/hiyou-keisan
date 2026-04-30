@@ -175,7 +175,7 @@ async function loadInputForm() {
 
   // ヘッダー
   const itemHeaders = activeItems.map(item =>
-    `<th class="col-item">${item.name}<br><span class="item-price-sub">${item.unit_price.toLocaleString()}円</span></th>`
+    `<th class="col-item g-item">${item.name}<br><span class="item-price-sub">${item.unit_price.toLocaleString()}円</span></th>`
   ).join('');
 
   // 行
@@ -184,23 +184,23 @@ async function loadInputForm() {
     const isWeekend = dow === 0 || dow === 6;
     const itemCells = activeItems.map(item => {
       const val = recMap[dateStr]?.[item.id] ?? 0;
-      return `<td><input type="number" min="0" class="cell-input" value="${val||''}"
+      return `<td class="g-item"><input type="number" min="0" class="cell-input" value="${val||''}"
                data-date="${dateStr}" data-item="${item.id}"></td>`;
     }).join('');
     return `<tr class="${isWeekend?'weekend':''}">
       <td class="col-day">${d}</td>
       <td class="col-dow ${dow===0?'sun':dow===6?'sat':''}">${DOW[dow]}</td>
-      <td><input type="text" class="cell-input svc-input" value="${meal.service_status||''}"
+      <td class="g-svc"><input type="text" class="cell-input svc-input" value="${meal.service_status||''}"
            data-date="${dateStr}" data-meal="service_status"></td>
-      <td><input type="number" min="0" class="cell-input" value="${meal.hospital_addition||''}"
+      <td class="g-svc"><input type="number" min="0" class="cell-input" value="${meal.hospital_addition||''}"
            data-date="${dateStr}" data-meal="hospital_addition"></td>
-      <td><input type="number" min="0" class="cell-input" value="${meal.hospital_special||''}"
+      <td class="g-svc"><input type="number" min="0" class="cell-input" value="${meal.hospital_special||''}"
            data-date="${dateStr}" data-meal="hospital_special"></td>
-      <td><input type="number" min="0" class="cell-input meal-input" value="${meal.breakfast||''}"
+      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${meal.breakfast||''}"
            data-date="${dateStr}" data-meal="breakfast"></td>
-      <td><input type="number" min="0" class="cell-input meal-input" value="${meal.lunch||''}"
+      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${meal.lunch||''}"
            data-date="${dateStr}" data-meal="lunch"></td>
-      <td><input type="number" min="0" class="cell-input meal-input" value="${meal.dinner||''}"
+      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${meal.dinner||''}"
            data-date="${dateStr}" data-meal="dinner"></td>
       ${itemCells}
     </tr>`;
@@ -220,7 +220,7 @@ async function loadInputForm() {
   }
 
   const totalItemCells = activeItems.map(item =>
-    `<td class="num subtotal-cell" id="tot-item-${item.id}">${initItemTotals[item.id] || ''}</td>`
+    `<td class="num subtotal-cell g-item" id="tot-item-${item.id}">${initItemTotals[item.id] || ''}</td>`
   ).join('');
 
   const initMealCost =
@@ -253,12 +253,12 @@ async function loadInputForm() {
             <tr>
               <th class="col-day">日</th>
               <th class="col-dow">曜</th>
-              <th class="col-svc">サービス提供の状況</th>
-              <th class="col-hadd">入院・外泊時加算</th>
-              <th class="col-hadd">入院時支援特別加算</th>
-              <th class="col-meal">朝食</th>
-              <th class="col-meal">昼食</th>
-              <th class="col-meal">夕食</th>
+              <th class="col-svc g-svc">サービス提供の状況</th>
+              <th class="col-hadd g-svc">入院・外泊時加算</th>
+              <th class="col-hadd g-svc">入院時支援特別加算</th>
+              <th class="col-meal g-meal">朝食</th>
+              <th class="col-meal g-meal">昼食</th>
+              <th class="col-meal g-meal">夕食</th>
               ${itemHeaders}
             </tr>
           </thead>
@@ -266,12 +266,12 @@ async function loadInputForm() {
           <tfoot>
             <tr class="subtotal-row">
               <td colspan="2" class="subtotal-label">小　計</td>
-              <td class="subtotal-cell"></td>
-              <td class="num subtotal-cell" id="tot-hadd">${initMealTotals.hospital_addition || ''}</td>
-              <td class="num subtotal-cell" id="tot-hsp">${initMealTotals.hospital_special || ''}</td>
-              <td class="num subtotal-cell" id="tot-breakfast">${initMealTotals.breakfast || ''}</td>
-              <td class="num subtotal-cell" id="tot-lunch">${initMealTotals.lunch || ''}</td>
-              <td class="num subtotal-cell" id="tot-dinner">${initMealTotals.dinner || ''}</td>
+              <td class="subtotal-cell g-svc"></td>
+              <td class="num subtotal-cell g-svc" id="tot-hadd">${initMealTotals.hospital_addition || ''}</td>
+              <td class="num subtotal-cell g-svc" id="tot-hsp">${initMealTotals.hospital_special || ''}</td>
+              <td class="num subtotal-cell g-meal" id="tot-breakfast">${initMealTotals.breakfast || ''}</td>
+              <td class="num subtotal-cell g-meal" id="tot-lunch">${initMealTotals.lunch || ''}</td>
+              <td class="num subtotal-cell g-meal" id="tot-dinner">${initMealTotals.dinner || ''}</td>
               ${totalItemCells}
             </tr>
           </tfoot>
