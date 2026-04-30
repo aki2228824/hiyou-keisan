@@ -238,7 +238,7 @@ async function loadInputForm() {
         <button onclick="saveAllRecords()" class="btn-primary">一括保存</button>
       </div>
       <div class="meal-price-bar">
-        <span class="meal-price-label">食事単価（この患者・この月）</span>
+        <span class="meal-price-label">食事単価</span>
         <label>朝食 <input type="number" min="0" id="mp-breakfast" value="${mealPrices.breakfast_price||''}" placeholder="0"> 円</label>
         <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${mealPrices.lunch_price||''}"     placeholder="0"> 円</label>
         <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${mealPrices.dinner_price||''}"    placeholder="0"> 円</label>
