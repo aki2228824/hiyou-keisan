@@ -394,29 +394,35 @@ async function saveAllRecords() {
 // ============================================================
 // 月次集計
 // ============================================================
+let selectedSummaryWardId = null;
+
 async function initSummaryPage() {
   const wards = await api('/wards');
-  const sel = document.getElementById('sum-ward');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">病棟を選択</option>' +
-    wards.map(w => `<option value="${w.id}" ${w.id==cur?'selected':''}>${w.name}</option>`).join('');
 
   if (!document.getElementById('sum-month').value) {
     const now = new Date();
     document.getElementById('sum-month').value =
       `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   }
+
+  document.getElementById('sum-ward-buttons').innerHTML = wards.map(w => `
+    <button class="ward-btn ${selectedSummaryWardId==w.id?'active':''}"
+            onclick="selectSummaryWard(${w.id})">${w.name}</button>
+  `).join('');
 }
 
-async function loadSummaryPatients() { /* ward変更時 */ }
+function selectSummaryWard(wardId) {
+  selectedSummaryWardId = wardId;
+  document.querySelectorAll('#sum-ward-buttons .ward-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`#sum-ward-buttons .ward-btn[onclick="selectSummaryWard(${wardId})"]`).classList.add('active');
+}
 
 async function loadSummary() {
-  const wardId = document.getElementById('sum-ward').value;
-  const ym     = document.getElementById('sum-month').value;
+  const ym = document.getElementById('sum-month').value;
   if (!ym) return;
   const [year, month] = ym.split('-');
 
-  let patients = await api('/patients' + (wardId ? `?ward_id=${wardId}` : ''));
+  let patients = await api('/patients' + (selectedSummaryWardId ? `?ward_id=${selectedSummaryWardId}` : ''));
   patients = patients.filter(p => p.active);
 
   const summaries = await Promise.all(patients.map(p =>

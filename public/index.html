@@ -57,12 +57,18 @@
 
   <!-- 月次集計ページ -->
   <section id="page-summary" class="page hidden">
-    <div class="toolbar">
-      <select id="sum-ward" onchange="loadSummaryPatients()"><option value="">病棟を選択</option></select>
-      <input type="month" id="sum-month">
-      <button onclick="loadSummary()" class="btn-primary">集計表示</button>
+    <div class="input-layout">
+      <div class="input-sidebar">
+        <div id="sum-ward-buttons" class="ward-buttons"></div>
+      </div>
+      <div class="input-main">
+        <div class="toolbar">
+          <input type="month" id="sum-month">
+          <button onclick="loadSummary()" class="btn-primary">集計表示</button>
+        </div>
+        <div id="summary-table"></div>
+      </div>
     </div>
-    <div id="summary-table"></div>
   </section>
 
   <!-- マスタ管理ページ -->
