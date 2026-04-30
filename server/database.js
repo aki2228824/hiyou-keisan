@@ -85,6 +85,18 @@ function initSchema() {
       UNIQUE(patient_id, record_date),
       FOREIGN KEY (patient_id) REFERENCES patients(id)
     );
+
+    CREATE TABLE IF NOT EXISTS patient_meal_prices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      breakfast_price INTEGER NOT NULL DEFAULT 0,
+      lunch_price INTEGER NOT NULL DEFAULT 0,
+      dinner_price INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(patient_id, year, month),
+      FOREIGN KEY (patient_id) REFERENCES patients(id)
+    );
   `);
 
   migrateSchema();

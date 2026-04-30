@@ -8,11 +8,12 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ルート登録（DB初期化後に）
 db.getDb().then(() => {
-  app.use('/api/wards',    require('./routes/wards'));
-  app.use('/api/patients', require('./routes/patients'));
-  app.use('/api/items',    require('./routes/items'));
-  app.use('/api/records',  require('./routes/records'));
-  app.use('/api/pdf',      require('./routes/pdf'));
+  app.use('/api/wards',       require('./routes/wards'));
+  app.use('/api/patients',    require('./routes/patients'));
+  app.use('/api/items',       require('./routes/items'));
+  app.use('/api/records',     require('./routes/records'));
+  app.use('/api/meal-prices', require('./routes/mealprices'));
+  app.use('/api/pdf',         require('./routes/pdf'));
 
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));

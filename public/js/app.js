@@ -136,6 +136,9 @@ async function loadInputForm() {
     </tr>`;
   }).join('');
 
+  // 食事単価を取得
+  const mealPrices = await api(`/meal-prices?patient_id=${patientId}&year=${year}&month=${month}`);
+
   // 小計行（初期値）
   const initMealTotals = { hospital_addition: 0, hospital_special: 0, breakfast: 0, lunch: 0, dinner: 0 };
   for (const m of Object.values(mealMap)) {
@@ -150,11 +153,24 @@ async function loadInputForm() {
     `<td class="num subtotal-cell" id="tot-item-${item.id}">${initItemTotals[item.id] || ''}</td>`
   ).join('');
 
+  const initMealCost =
+    initMealTotals.breakfast * (mealPrices.breakfast_price || 0) +
+    initMealTotals.lunch     * (mealPrices.lunch_price    || 0) +
+    initMealTotals.dinner    * (mealPrices.dinner_price   || 0);
+
   document.getElementById('input-form').innerHTML = `
     <div class="monthly-card">
       <div class="monthly-header">
         <span class="monthly-title">${year}年${Number(month)}月　実績入力</span>
         <button onclick="saveAllRecords()" class="btn-primary">一括保存</button>
+      </div>
+      <div class="meal-price-bar">
+        <span class="meal-price-label">食事単価（この患者・この月）</span>
+        <label>朝食 <input type="number" min="0" id="mp-breakfast" value="${mealPrices.breakfast_price||''}" placeholder="0"> 円</label>
+        <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${mealPrices.lunch_price||''}"     placeholder="0"> 円</label>
+        <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${mealPrices.dinner_price||''}"    placeholder="0"> 円</label>
+        <button onclick="saveMealPrices('${patientId}','${year}','${month}')" class="btn-sm">単価保存</button>
+        <span class="meal-cost-disp">食事費合計：<strong id="meal-cost-total">${initMealCost.toLocaleString()}</strong> 円</span>
       </div>
       <div class="table-scroll">
         <table class="monthly-table" id="monthly-tbl">
@@ -190,6 +206,11 @@ async function loadInputForm() {
 
   // 入力のたびに小計を再計算
   document.getElementById('monthly-tbl').addEventListener('input', () => updateSubtotals(activeItems));
+
+  // 食事単価変更時に食事費合計を即時更新
+  ['mp-breakfast', 'mp-lunch', 'mp-dinner'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', updateMealCostTotal);
+  });
 }
 
 function updateSubtotals(activeItems) {
@@ -208,6 +229,35 @@ function updateSubtotals(activeItems) {
     const cell = document.getElementById(`tot-item-${item.id}`);
     if (cell) cell.textContent = sum || '';
   }
+
+  updateMealCostTotal();
+}
+
+function updateMealCostTotal() {
+  const bPrice = Number(document.getElementById('mp-breakfast')?.value) || 0;
+  const lPrice = Number(document.getElementById('mp-lunch')?.value)     || 0;
+  const dPrice = Number(document.getElementById('mp-dinner')?.value)    || 0;
+
+  const bCount = Number(document.getElementById('tot-breakfast')?.textContent) || 0;
+  const lCount = Number(document.getElementById('tot-lunch')?.textContent)     || 0;
+  const dCount = Number(document.getElementById('tot-dinner')?.textContent)    || 0;
+
+  const cost = bCount * bPrice + lCount * lPrice + dCount * dPrice;
+  const el = document.getElementById('meal-cost-total');
+  if (el) el.textContent = cost.toLocaleString();
+}
+
+async function saveMealPrices(patientId, year, month) {
+  await api('/meal-prices', { method: 'POST', body: {
+    patient_id: Number(patientId),
+    year: Number(year),
+    month: Number(month),
+    breakfast_price: Number(document.getElementById('mp-breakfast').value) || 0,
+    lunch_price:     Number(document.getElementById('mp-lunch').value)     || 0,
+    dinner_price:    Number(document.getElementById('mp-dinner').value)    || 0,
+  }});
+  updateMealCostTotal();
+  showToast('食事単価を保存しました');
 }
 
 async function saveAllRecords() {
@@ -278,8 +328,8 @@ async function loadSummary() {
 
   const thead = `<tr>
     <th>病棟</th><th>患者名</th>
-    <th>朝食</th><th>昼食</th><th>夕食</th>
-    <th>日用品費合計</th><th>PDF</th>
+    <th>朝食回数</th><th>昼食回数</th><th>夕食回数</th>
+    <th>食事費合計</th><th>日用品費合計</th><th>合計金額</th><th>PDF</th>
   </tr>`;
 
   const tbody = summaries.map(s => `
@@ -289,6 +339,8 @@ async function loadSummary() {
       <td class="num">${s.mealTotals?.breakfast||0}</td>
       <td class="num">${s.mealTotals?.lunch||0}</td>
       <td class="num">${s.mealTotals?.dinner||0}</td>
+      <td class="num">${(s.mealCost||0).toLocaleString()} 円</td>
+      <td class="num">${(s.itemTotal||0).toLocaleString()} 円</td>
       <td class="num grand">${(s.grandTotal||0).toLocaleString()} 円</td>
       <td><a class="pdf-btn" href="/api/pdf?patient_id=${s.id}&year=${year}&month=${month}" target="_blank">PDF</a></td>
     </tr>`).join('');
@@ -310,9 +362,10 @@ function showMasterTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('master-' + name).classList.remove('hidden');
   document.getElementById('mtab-' + name).classList.add('active');
-  if (name === 'patients') renderMasterPatients();
-  if (name === 'items')    renderMasterItems();
-  if (name === 'prices')   renderMasterPrices();
+  if (name === 'patients')   renderMasterPatients();
+  if (name === 'items')      renderMasterItems();
+  if (name === 'prices')     renderMasterPrices();
+  if (name === 'mealprices') renderMasterMealPrices();
 }
 
 async function initMasterPage() {
