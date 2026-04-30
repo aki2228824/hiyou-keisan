@@ -486,7 +486,7 @@ async function renderMasterPatients() {
 
   const filtered = selectedMasterWardId
     ? patients.filter(p => p.ward_id == selectedMasterWardId)
-    : patients;
+    : [];
 
   const rows = filtered.map(p => `
     <tr>
@@ -499,8 +499,7 @@ async function renderMasterPatients() {
       <td><label><input type="checkbox" ${p.active?'checked':''} onchange="updatePatient(${p.id},'active',this.checked?1:0)"> 有効</label></td>
     </tr>`).join('');
 
-  document.getElementById('master-patients').innerHTML = `
-    <div class="master-ward-btns">${wardBtns}</div>
+  const mainContent = selectedMasterWardId ? `
     <table class="master-table">
       <thead><tr><th>病棟</th><th>氏名</th><th>部屋</th><th>受給者証番号</th><th>状態</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -511,6 +510,14 @@ async function renderMasterPatients() {
       <input id="new-p-room" placeholder="部屋" style="width:60px">
       <input id="new-p-bno"  placeholder="受給者証番号" style="width:120px">
       <button onclick="addPatient()" class="btn-primary">追加</button>
+    </div>` : '<p class="no-patient">病棟を選択してください</p>';
+
+  document.getElementById('master-patients').innerHTML = `
+    <div class="input-layout">
+      <div class="input-sidebar">
+        <div class="ward-buttons">${wardBtns}</div>
+      </div>
+      <div class="input-main">${mainContent}</div>
     </div>`;
 }
 
