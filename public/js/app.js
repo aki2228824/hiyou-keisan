@@ -496,7 +496,7 @@ async function renderMasterPatients() {
     </tr>`).join('');
 
   const mainContent = selectedMasterWardId ? `
-    <div class="add-row">
+    <div class="add-row" style="justify-content:flex-end">
       <input id="new-p-name" placeholder="氏名" style="width:120px">
       <input id="new-p-room" placeholder="部屋" style="width:60px">
       <input id="new-p-bno"  placeholder="受給者証番号" style="width:120px">
