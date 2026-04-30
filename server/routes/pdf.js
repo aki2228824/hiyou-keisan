@@ -40,7 +40,7 @@ router.get('/', async (req, res) => {
   // 食事実績
   const mealMap = {};
   const meals = db.query(
-    'SELECT record_date, breakfast, lunch, dinner, note FROM meal_records WHERE patient_id=? AND record_date BETWEEN ? AND ? ORDER BY record_date',
+    'SELECT record_date, breakfast, lunch, dinner, service_status, hospital_addition, hospital_special FROM meal_records WHERE patient_id=? AND record_date BETWEEN ? AND ? ORDER BY record_date',
     [patient_id, from, to]
   );
   for (const m of meals) mealMap[m.record_date] = m;
@@ -86,7 +86,7 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
   ).join('');
 
   const dataRows = days.map(({ dateStr, day, dow }) => {
-    const meal = mealMap[dateStr] || { breakfast: 0, lunch: 0, dinner: 0, note: '' };
+    const meal = mealMap[dateStr] || {};
     const itemCells = items.map(item => {
       const q = recordMap[dateStr]?.[item.id] ?? 0;
       return `<td class="num">${q || ''}</td>`;
@@ -95,7 +95,9 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
     return `<tr class="${isWeekend ? 'weekend' : ''}">
       <td class="center">${day}</td>
       <td class="center">${dow}</td>
-      <td class="center">${meal.note || ''}</td>
+      <td class="center">${meal.service_status || ''}</td>
+      <td class="num">${meal.hospital_addition || ''}</td>
+      <td class="num">${meal.hospital_special || ''}</td>
       <td class="num">${meal.breakfast || ''}</td>
       <td class="num">${meal.lunch || ''}</td>
       <td class="num">${meal.dinner || ''}</td>
@@ -144,12 +146,14 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
       <tr>
         <th rowspan="2">日</th>
         <th rowspan="2">曜</th>
-        <th rowspan="2">状況</th>
+        <th rowspan="2">サービス提供の状況</th>
+        <th rowspan="2">入院・外泊時加算</th>
+        <th rowspan="2">入院時支援特別加算</th>
         <th colspan="3">食事回数</th>
         ${items.map(i => `<th class="item-h" rowspan="2">${i.name}<br><span class="price">${priceMap[i.id].toLocaleString()}円</span></th>`).join('')}
       </tr>
       <tr>
-        <th>朝</th><th>昼</th><th>夕</th>
+        <th>朝食</th><th>昼食</th><th>夕食</th>
       </tr>
     </thead>
     <tbody>
@@ -157,10 +161,10 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="3" class="center total">合　計</td>
-        <td class="num total">${meals.reduce((s,m)=>s+m.breakfast,0)||''}</td>
-        <td class="num total">${meals.reduce((s,m)=>s+m.lunch,0)||''}</td>
-        <td class="num total">${meals.reduce((s,m)=>s+m.dinner,0)||''}</td>
+        <td colspan="5" class="center total">合　計</td>
+        <td class="num total">${meals.reduce((s,m)=>s+(m.breakfast||0),0)||''}</td>
+        <td class="num total">${meals.reduce((s,m)=>s+(m.lunch||0),0)||''}</td>
+        <td class="num total">${meals.reduce((s,m)=>s+(m.dinner||0),0)||''}</td>
         ${totalItemCells}
       </tr>
     </tfoot>

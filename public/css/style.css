@@ -221,7 +221,10 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .col-dow  { width: 24px; }
 .col-dow.sun { color: #c00; }
 .col-dow.sat { color: #00c; }
+.col-svc  { min-width: 90px; }
+.col-hadd { min-width: 60px; }
 .col-meal { width: 52px; }
+.svc-input { text-align: left; }
 
 /* 数値入力のスピナーボタンを非表示（入力領域を広く確保） */
 .cell-input[type="number"]::-webkit-outer-spin-button,

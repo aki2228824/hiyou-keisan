@@ -87,7 +87,18 @@ function initSchema() {
     );
   `);
 
+  migrateSchema();
   seedInitialData();
+}
+
+function migrateSchema() {
+  const cols = db.exec("PRAGMA table_info(meal_records)")[0]?.values.map(r => r[1]) ?? [];
+  if (!cols.includes('service_status'))
+    db.run("ALTER TABLE meal_records ADD COLUMN service_status TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes('hospital_addition'))
+    db.run("ALTER TABLE meal_records ADD COLUMN hospital_addition INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes('hospital_special'))
+    db.run("ALTER TABLE meal_records ADD COLUMN hospital_special INTEGER NOT NULL DEFAULT 0");
 }
 
 function seedInitialData() {

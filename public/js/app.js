@@ -120,12 +120,18 @@ async function loadInputForm() {
     return `<tr class="${isWeekend?'weekend':''}">
       <td class="col-day">${d}</td>
       <td class="col-dow ${dow===0?'sun':dow===6?'sat':''}">${DOW[dow]}</td>
+      <td><input type="text" class="cell-input svc-input" value="${meal.service_status??''}"
+           data-date="${dateStr}" data-meal="service_status"></td>
+      <td><input type="number" min="0" class="cell-input" value="${meal.hospital_addition||''}"
+           data-date="${dateStr}" data-meal="hospital_addition"></td>
+      <td><input type="number" min="0" class="cell-input" value="${meal.hospital_special||''}"
+           data-date="${dateStr}" data-meal="hospital_special"></td>
       <td><input type="number" min="0" class="cell-input meal-input" value="${meal.breakfast??''}"
-           data-date="${dateStr}" data-meal="breakfast" placeholder="0"></td>
+           data-date="${dateStr}" data-meal="breakfast"></td>
       <td><input type="number" min="0" class="cell-input meal-input" value="${meal.lunch??''}"
-           data-date="${dateStr}" data-meal="lunch" placeholder="0"></td>
+           data-date="${dateStr}" data-meal="lunch"></td>
       <td><input type="number" min="0" class="cell-input meal-input" value="${meal.dinner??''}"
-           data-date="${dateStr}" data-meal="dinner" placeholder="0"></td>
+           data-date="${dateStr}" data-meal="dinner"></td>
       ${itemCells}
     </tr>`;
   }).join('');
@@ -142,6 +148,9 @@ async function loadInputForm() {
             <tr>
               <th class="col-day">日</th>
               <th class="col-dow">曜</th>
+              <th class="col-svc">サービス提供の状況</th>
+              <th class="col-hadd">入院・外泊時加算</th>
+              <th class="col-hadd">入院時支援特別加算</th>
               <th class="col-meal">朝食</th>
               <th class="col-meal">昼食</th>
               <th class="col-meal">夕食</th>
@@ -173,7 +182,7 @@ async function saveAllRecords() {
     const date = el.dataset.date;
     const field = el.dataset.meal;
     if (!byDate[date]) byDate[date] = { items: [], meal: {} };
-    byDate[date].meal[field] = Number(el.value) || 0;
+    byDate[date].meal[field] = field === 'service_status' ? el.value : (Number(el.value) || 0);
   });
 
   for (const [date, data] of Object.entries(byDate)) {
