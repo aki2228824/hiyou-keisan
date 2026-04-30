@@ -192,7 +192,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .monthly-table {
   border-collapse: collapse;
   font-size: 12px;
-  white-space: nowrap;
+  table-layout: auto;
 }
 .monthly-table th, .monthly-table td {
   border: 1px solid #ddd;
@@ -206,7 +206,8 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   top: 0;
   z-index: 1;
   font-size: 11px;
-  padding: 4px 3px;
+  padding: 4px 5px;
+  white-space: nowrap;
 }
 .monthly-table tbody tr:hover { background: #f0f4ff; }
 .monthly-table tbody tr.weekend { background: #fafaf5; }
@@ -218,16 +219,17 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .col-dow.sat { color: #00c; }
 .col-meal { width: 34px; }
 .col-note { width: 70px; }
-.col-item { min-width: 40px; max-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+.col-item { white-space: nowrap; }
 
 .cell-input {
   width: 100%;
+  min-width: 2em;
   border: none;
   background: transparent;
   text-align: center;
   font-size: 12px;
   font-family: inherit;
-  padding: 2px 0;
+  padding: 2px 2px;
 }
 .cell-input:focus {
   background: #fffde7;
