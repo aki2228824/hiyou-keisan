@@ -187,7 +187,11 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 }
 .monthly-title { font-size: 15px; font-weight: bold; color: #2c5f8a; }
 
-.table-scroll { overflow-x: auto; }
+.table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 145px);
+}
 
 .monthly-table {
   border-collapse: collapse;
