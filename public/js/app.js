@@ -475,10 +475,6 @@ async function initMasterPage() {
 // --- 患者管理 ---
 async function renderMasterPatients() {
   const [wards, patients] = await Promise.all([api('/wards'), api('/patients')]);
-  const wardOpts = wards.map(w =>
-    `<option value="${w.id}" ${w.id==selectedMasterWardId?'selected':''}>${w.name}</option>`
-  ).join('');
-
   const wardBtns = wards.map(w => `
     <button class="ward-btn ${selectedMasterWardId==w.id?'active':''}"
             onclick="selectMasterWard(${w.id})">${w.name}</button>
@@ -501,7 +497,6 @@ async function renderMasterPatients() {
 
   const mainContent = selectedMasterWardId ? `
     <div class="add-row">
-      <select id="new-p-ward">${wardOpts}</select>
       <input id="new-p-name" placeholder="氏名" style="width:120px">
       <input id="new-p-room" placeholder="部屋" style="width:60px">
       <input id="new-p-bno"  placeholder="受給者証番号" style="width:120px">
@@ -535,12 +530,11 @@ async function updatePatient(id, field, value) {
 }
 
 async function addPatient() {
-  const ward_id      = document.getElementById('new-p-ward').value;
-  const name         = document.getElementById('new-p-name').value.trim();
-  const room         = document.getElementById('new-p-room').value.trim();
+  const name           = document.getElementById('new-p-name').value.trim();
+  const room           = document.getElementById('new-p-room').value.trim();
   const beneficiary_no = document.getElementById('new-p-bno').value.trim();
   if (!name) return alert('氏名を入力してください');
-  await api('/patients', { method: 'POST', body: { ward_id, name, room, beneficiary_no } });
+  await api('/patients', { method: 'POST', body: { ward_id: selectedMasterWardId, name, room, beneficiary_no } });
   renderMasterPatients();
 }
 
