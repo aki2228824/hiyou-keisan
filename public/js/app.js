@@ -136,6 +136,20 @@ async function loadInputForm() {
     </tr>`;
   }).join('');
 
+  // 小計行（初期値）
+  const initMealTotals = { hospital_addition: 0, hospital_special: 0, breakfast: 0, lunch: 0, dinner: 0 };
+  for (const m of Object.values(mealMap)) {
+    for (const f of Object.keys(initMealTotals)) initMealTotals[f] += Number(m[f]) || 0;
+  }
+  const initItemTotals = {};
+  for (const item of activeItems) {
+    initItemTotals[item.id] = Object.values(recMap).reduce((s, d) => s + (Number(d[item.id]) || 0), 0);
+  }
+
+  const totalItemCells = activeItems.map(item =>
+    `<td class="num subtotal-cell" id="tot-item-${item.id}">${initItemTotals[item.id] || ''}</td>`
+  ).join('');
+
   document.getElementById('input-form').innerHTML = `
     <div class="monthly-card">
       <div class="monthly-header">
@@ -143,7 +157,7 @@ async function loadInputForm() {
         <button onclick="saveAllRecords()" class="btn-primary">一括保存</button>
       </div>
       <div class="table-scroll">
-        <table class="monthly-table">
+        <table class="monthly-table" id="monthly-tbl">
           <thead>
             <tr>
               <th class="col-day">日</th>
@@ -158,9 +172,42 @@ async function loadInputForm() {
             </tr>
           </thead>
           <tbody>${rows}</tbody>
+          <tfoot>
+            <tr class="subtotal-row">
+              <td colspan="2" class="subtotal-label">小　計</td>
+              <td class="subtotal-cell"></td>
+              <td class="num subtotal-cell" id="tot-hadd">${initMealTotals.hospital_addition || ''}</td>
+              <td class="num subtotal-cell" id="tot-hsp">${initMealTotals.hospital_special || ''}</td>
+              <td class="num subtotal-cell" id="tot-breakfast">${initMealTotals.breakfast || ''}</td>
+              <td class="num subtotal-cell" id="tot-lunch">${initMealTotals.lunch || ''}</td>
+              <td class="num subtotal-cell" id="tot-dinner">${initMealTotals.dinner || ''}</td>
+              ${totalItemCells}
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>`;
+
+  // 入力のたびに小計を再計算
+  document.getElementById('monthly-tbl').addEventListener('input', () => updateSubtotals(activeItems));
+}
+
+function updateSubtotals(activeItems) {
+  const mealFields = ['hospital_addition', 'hospital_special', 'breakfast', 'lunch', 'dinner'];
+  const mealIds    = ['tot-hadd', 'tot-hsp', 'tot-breakfast', 'tot-lunch', 'tot-dinner'];
+
+  mealFields.forEach((field, i) => {
+    let sum = 0;
+    document.querySelectorAll(`[data-meal="${field}"]`).forEach(el => { sum += Number(el.value) || 0; });
+    document.getElementById(mealIds[i]).textContent = sum || '';
+  });
+
+  for (const item of activeItems) {
+    let sum = 0;
+    document.querySelectorAll(`[data-item="${item.id}"]`).forEach(el => { sum += Number(el.value) || 0; });
+    const cell = document.getElementById(`tot-item-${item.id}`);
+    if (cell) cell.textContent = sum || '';
+  }
 }
 
 async function saveAllRecords() {
