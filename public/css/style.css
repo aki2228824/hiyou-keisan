@@ -429,6 +429,7 @@ table.summary-table {
 .tab-btn.active { background: #2c5f8a; color: white; }
 
 .master-tab { background: white; border-radius: 0 8px 8px 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.master-ward-btns { display: flex; gap: 8px; margin-bottom: 12px; }
 
 table.master-table {
   width: 100%;

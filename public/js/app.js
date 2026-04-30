@@ -455,6 +455,8 @@ async function loadSummary() {
 // ============================================================
 // マスタ管理
 // ============================================================
+let selectedMasterWardId = null;
+
 function showMasterTab(name) {
   document.querySelectorAll('.master-tab').forEach(t => t.classList.add('hidden'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -473,9 +475,20 @@ async function initMasterPage() {
 // --- 患者管理 ---
 async function renderMasterPatients() {
   const [wards, patients] = await Promise.all([api('/wards'), api('/patients')]);
-  const wardOpts = wards.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
+  const wardOpts = wards.map(w =>
+    `<option value="${w.id}" ${w.id==selectedMasterWardId?'selected':''}>${w.name}</option>`
+  ).join('');
 
-  const rows = patients.map(p => `
+  const wardBtns = wards.map(w => `
+    <button class="ward-btn ${selectedMasterWardId==w.id?'active':''}"
+            onclick="selectMasterWard(${w.id})">${w.name}</button>
+  `).join('');
+
+  const filtered = selectedMasterWardId
+    ? patients.filter(p => p.ward_id == selectedMasterWardId)
+    : patients;
+
+  const rows = filtered.map(p => `
     <tr>
       <td><select onchange="updatePatient(${p.id},'ward_id',this.value)">${
         wards.map(w=>`<option value="${w.id}" ${w.id==p.ward_id?'selected':''}>${w.name}</option>`).join('')
@@ -487,6 +500,7 @@ async function renderMasterPatients() {
     </tr>`).join('');
 
   document.getElementById('master-patients').innerHTML = `
+    <div class="master-ward-btns">${wardBtns}</div>
     <table class="master-table">
       <thead><tr><th>病棟</th><th>氏名</th><th>部屋</th><th>受給者証番号</th><th>状態</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -498,6 +512,11 @@ async function renderMasterPatients() {
       <input id="new-p-bno"  placeholder="受給者証番号" style="width:120px">
       <button onclick="addPatient()" class="btn-primary">追加</button>
     </div>`;
+}
+
+function selectMasterWard(wardId) {
+  selectedMasterWardId = selectedMasterWardId == wardId ? null : wardId;
+  renderMasterPatients();
 }
 
 async function updatePatient(id, field, value) {
