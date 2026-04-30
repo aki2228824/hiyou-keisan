@@ -622,11 +622,11 @@ async function renderMasterUsers() {
 
   document.getElementById('master-users').innerHTML = `
     <table class="master-table">
-      <thead><tr><th>ユーザー名</th><th>ロール</th><th>パスワード変更</th><th>状態</th></tr></thead>
+      <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード変更（全ユーザー編集可）</th><th>状態</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="add-row">
-      <input id="new-u-name" placeholder="ユーザー名" style="width:120px">
+      <input id="new-u-name" placeholder="ユーザーID" style="width:120px">
       <input type="password" id="new-u-pass" placeholder="パスワード" style="width:120px">
       <select id="new-u-role">${roleOpts('staff')}</select>
       <button onclick="addUser()" class="btn-primary">追加</button>
@@ -650,7 +650,7 @@ async function addUser() {
   const username = document.getElementById('new-u-name').value.trim();
   const password = document.getElementById('new-u-pass').value;
   const role     = document.getElementById('new-u-role').value;
-  if (!username || !password) return alert('ユーザー名とパスワードを入力してください');
+  if (!username || !password) return alert('ユーザーIDとパスワードを入力してください');
   await api('/users', { method: 'POST', body: { username, password, role } });
   renderMasterUsers();
 }
