@@ -101,6 +101,76 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   cursor: pointer;
 }
 
+/* 日次入力：サイドバーレイアウト */
+.input-layout {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.input-sidebar {
+  width: 160px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ward-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ward-btn {
+  width: 100%;
+  padding: 10px 8px;
+  background: white;
+  border: 2px solid #ccc;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: bold;
+  color: #555;
+  transition: all 0.15s;
+}
+.ward-btn:hover { border-color: #2c5f8a; color: #2c5f8a; }
+.ward-btn.active { background: #2c5f8a; border-color: #2c5f8a; color: white; }
+
+.date-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #666;
+}
+.date-row input { width: 100%; font-size: 13px; padding: 5px 6px; }
+
+.patient-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.patient-btn {
+  width: 100%;
+  padding: 8px 8px;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+  text-align: left;
+  transition: all 0.15s;
+}
+.patient-btn:hover { background: #e8f0ff; border-color: #2c5f8a; }
+.patient-btn.active { background: #ddeeff; border-color: #2c5f8a; font-weight: bold; }
+
+.no-patient { font-size: 12px; color: #999; padding: 6px; }
+
+.input-main { flex: 1; min-width: 0; }
+
 /* 日次入力フォーム */
 .input-card {
   background: white;

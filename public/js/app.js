@@ -22,34 +22,55 @@ async function api(path, opts = {}) {
 // ============================================================
 // 日次入力
 // ============================================================
+let selectedWardId   = null;
+let selectedPatientId = null;
+
 async function initInputPage() {
   const wards = await api('/wards');
-  const sel = document.getElementById('sel-ward');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">病棟を選択</option>' +
-    wards.map(w => `<option value="${w.id}" ${w.id==cur?'selected':''}>${w.name}</option>`).join('');
 
   const today = new Date().toISOString().slice(0,10);
   if (!document.getElementById('sel-date').value)
     document.getElementById('sel-date').value = today;
 
-  if (cur) await loadPatients();
+  document.getElementById('ward-buttons').innerHTML = wards.map(w => `
+    <button class="ward-btn ${selectedWardId==w.id?'active':''}"
+            onclick="selectWard(${w.id})">${w.name}</button>
+  `).join('');
+
+  if (selectedWardId) await loadPatients();
+}
+
+async function selectWard(wardId) {
+  selectedWardId = wardId;
+  selectedPatientId = null;
+  document.getElementById('input-form').innerHTML = '';
+  document.querySelectorAll('.ward-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.ward-btn[onclick="selectWard(${wardId})"]`).classList.add('active');
+  await loadPatients();
 }
 
 async function loadPatients() {
-  const wardId = document.getElementById('sel-ward').value;
-  if (!wardId) return;
-  const patients = await api('/patients?ward_id=' + wardId);
-  const sel = document.getElementById('sel-patient');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">患者を選択</option>' +
-    patients.filter(p=>p.active).map(p =>
-      `<option value="${p.id}" ${p.id==cur?'selected':''}>${p.name}</option>`
-    ).join('');
+  if (!selectedWardId) return;
+  const patients = await api('/patients?ward_id=' + selectedWardId);
+  const active = patients.filter(p => p.active);
+
+  document.getElementById('patient-list').innerHTML = active.length
+    ? active.map(p => `
+        <button class="patient-btn ${selectedPatientId==p.id?'active':''}"
+                onclick="selectPatient(${p.id})">${p.name}</button>
+      `).join('')
+    : '<p class="no-patient">患者が登録されていません</p>';
+}
+
+async function selectPatient(patientId) {
+  selectedPatientId = patientId;
+  document.querySelectorAll('.patient-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.patient-btn[onclick="selectPatient(${patientId})"]`).classList.add('active');
+  await loadInputForm();
 }
 
 async function loadInputForm() {
-  const patientId = document.getElementById('sel-patient').value;
+  const patientId = selectedPatientId;
   const date      = document.getElementById('sel-date').value;
   if (!patientId || !date) return;
 

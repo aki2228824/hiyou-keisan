@@ -19,13 +19,21 @@
 <main>
   <!-- 日次入力ページ -->
   <section id="page-input" class="page">
-    <div class="toolbar">
-      <select id="sel-ward" onchange="loadPatients()"><option value="">病棟を選択</option></select>
-      <select id="sel-patient" onchange="loadInputForm()"><option value="">患者を選択</option></select>
-      <input type="date" id="sel-date" onchange="loadInputForm()">
-      <button onclick="loadInputForm()" class="btn-secondary">表示</button>
+    <div class="input-layout">
+      <!-- 左：病棟・患者・日付選択 -->
+      <div class="input-sidebar">
+        <div id="ward-buttons" class="ward-buttons"></div>
+        <div class="date-row">
+          <label>日付</label>
+          <input type="date" id="sel-date" onchange="loadInputForm()">
+        </div>
+        <div id="patient-list" class="patient-list"></div>
+      </div>
+      <!-- 右：入力フォーム -->
+      <div class="input-main">
+        <div id="input-form"></div>
+      </div>
     </div>
-    <div id="input-form"></div>
   </section>
 
   <!-- 月次集計ページ -->
