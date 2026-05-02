@@ -272,7 +272,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   border-right: 1px solid #c8d4ee;
 }
 .item-cost-disp strong {
-  color: #D97730;
+  color: #333;
   font-size: 14px;
 }
 .meal-cost-disp {
