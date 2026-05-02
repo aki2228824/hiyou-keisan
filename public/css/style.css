@@ -1,10 +1,10 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; background: #FBF6F1; color: #333; }
+body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; background: #FFF9F4; color: #333; }
 
 /* ログインオーバーレイ */
 .login-overlay {
   position: fixed; inset: 0;
-  background: #3D1F0A;
+  background: #7A3500;
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }
@@ -18,7 +18,7 @@ body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; backgrou
   gap: 14px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
-.login-box h2 { font-size: 20px; color: #8B5E3C; text-align: center; }
+.login-box h2 { font-size: 20px; color: #D97730; text-align: center; }
 .login-title { font-size: 12px; color: #888; text-align: center; margin-top: -8px; }
 .login-box label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #555; }
 .login-box input { padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
@@ -26,7 +26,7 @@ body { font-family: "Meiryo", "MS Gothic", sans-serif; font-size: 14px; backgrou
 .login-error { background: #fdecea; color: #c00; padding: 8px 12px; border-radius: 4px; font-size: 13px; }
 
 header {
-  background: #8B5E3C;
+  background: #D97730;
   color: white;
   padding: 10px 20px;
   display: flex;
@@ -94,14 +94,14 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 
 .btn-primary {
   padding: 7px 18px;
-  background: #8B5E3C;
+  background: #D97730;
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
 }
-.btn-primary:hover { background: #6D4228; }
+.btn-primary:hover { background: #B85E18; }
 
 .btn-secondary {
   padding: 7px 18px;
@@ -138,7 +138,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .btn-sm {
   padding: 4px 10px;
   font-size: 12px;
-  background: #8B5E3C;
+  background: #D97730;
   color: white;
   border: none;
   border-radius: 3px;
@@ -160,7 +160,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .input-sidebar {
   width: 160px;
   flex-shrink: 0;
-  border-right: 1px solid #C8B8A8;
+  border-right: 1px solid #E0C4A0;
   padding-right: 14px;
   display: flex;
   flex-direction: column;
@@ -185,8 +185,8 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   color: #555;
   transition: all 0.15s;
 }
-.ward-btn:hover { border-color: #8B5E3C; color: #8B5E3C; }
-.ward-btn.active { background: #8B5E3C; border-color: #8B5E3C; color: white; }
+.ward-btn:hover { border-color: #D97730; color: #D97730; }
+.ward-btn.active { background: #D97730; border-color: #D97730; color: white; }
 
 .date-row {
   display: flex;
@@ -215,8 +215,8 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   text-align: left;
   transition: all 0.15s;
 }
-.patient-btn:hover { background: #F5EBE0; border-color: #8B5E3C; }
-.patient-btn.active { background: #EDD9C5; border-color: #8B5E3C; font-weight: bold; }
+.patient-btn:hover { background: #FFEBD8; border-color: #D97730; }
+.patient-btn.active { background: #FFD8B0; border-color: #D97730; font-weight: bold; }
 
 .no-patient { font-size: 12px; color: #999; padding: 6px; }
 
@@ -234,23 +234,23 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 2px solid #8B5E3C;
+  border-bottom: 2px solid #D97730;
 }
-.monthly-title { font-size: 15px; font-weight: bold; color: #8B5E3C; }
+.monthly-title { font-size: 15px; font-weight: bold; color: #D97730; }
 
 .meal-price-bar {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 8px 14px;
-  background: #FAF0E6;
-  border-bottom: 1px solid #DDD0BC;
+  background: #FFF4EC;
+  border-bottom: 1px solid #ECC8A0;
   flex-wrap: wrap;
 }
 .meal-price-label {
   font-size: 12px;
   font-weight: bold;
-  color: #8B5E3C;
+  color: #D97730;
   white-space: nowrap;
 }
 .meal-price-bar label {
@@ -272,7 +272,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   border-right: 1px solid #c8d4ee;
 }
 .item-cost-disp strong {
-  color: #8B5E3C;
+  color: #D97730;
   font-size: 14px;
 }
 .meal-cost-disp {
@@ -307,7 +307,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   text-align: center;
 }
 .monthly-table thead th {
-  background: #8B5E3C;
+  background: #D97730;
   color: white;
   position: sticky;
   top: 0;
@@ -316,9 +316,9 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   padding: 4px 5px;
   white-space: nowrap;
 }
-.monthly-table tbody tr:hover { background: #F5EBE0; }
-.monthly-table tbody tr.weekend { background: #FAF5F0; }
-.monthly-table tbody tr.weekend:hover { background: #EDE0D5; }
+.monthly-table tbody tr:hover { background: #FFEBD8; }
+.monthly-table tbody tr.weekend { background: #FFF8F2; }
+.monthly-table tbody tr.weekend:hover { background: #FFE4CC; }
 
 .col-day  { width: 28px; font-weight: bold; }
 .col-dow  { width: 24px; }
@@ -354,10 +354,10 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 .monthly-table tfoot td.g-item { background: #F0E4D0; border-top: 2px solid #A07040; }
 
 /* 小計行 */
-.subtotal-row { background: #EDE0D0 !important; font-weight: bold; }
-.subtotal-row:hover { background: #E0D0C0 !important; }
-.subtotal-label { text-align: center; font-weight: bold; color: #8B5E3C; border-top: 2px solid #8B5E3C; }
-.subtotal-cell { text-align: right; border-top: 2px solid #8B5E3C; }
+.subtotal-row { background: #FFE4C8 !important; font-weight: bold; }
+.subtotal-row:hover { background: #FFD0A8 !important; }
+.subtotal-label { text-align: center; font-weight: bold; color: #D97730; border-top: 2px solid #D97730; }
+.subtotal-cell { text-align: right; border-top: 2px solid #D97730; }
 
 .cell-input {
   width: 100%;
@@ -371,7 +371,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 }
 .cell-input:focus {
   background: #fffde7;
-  outline: 1px solid #8B5E3C;
+  outline: 1px solid #D97730;
   border-radius: 2px;
 }
 
@@ -382,7 +382,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   padding: 16px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
-.input-card h2 { font-size: 15px; margin-bottom: 12px; color: #8B5E3C; border-bottom: 2px solid #8B5E3C; padding-bottom: 6px; }
+.input-card h2 { font-size: 15px; margin-bottom: 12px; color: #D97730; border-bottom: 2px solid #D97730; padding-bottom: 6px; }
 
 .items-grid {
   display: grid;
@@ -429,10 +429,10 @@ table.summary-table {
   padding: 6px 10px;
   white-space: nowrap;
 }
-.summary-table th { background: #8B5E3C; color: white; text-align: center; }
+.summary-table th { background: #D97730; color: white; text-align: center; }
 .summary-table td.num { text-align: right; }
 .summary-table tr:nth-child(even) { background: #f8f9fa; }
-.summary-table tr:hover { background: #F5EBE0; }
+.summary-table tr:hover { background: #FFEBD8; }
 .summary-table td.grand { font-weight: bold; color: #c00; }
 
 /* マスタ管理 */
@@ -445,7 +445,7 @@ table.summary-table {
   cursor: pointer;
   font-size: 14px;
 }
-.tab-btn.active { background: #8B5E3C; color: white; }
+.tab-btn.active { background: #D97730; color: white; }
 
 .master-tab { background: white; border-radius: 0 8px 8px 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 
