@@ -285,7 +285,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 }
 .cap-label {
   font-size: 11px;
-  color: #e67e00;
+  color: #c00;
   margin-left: 4px;
   font-weight: bold;
 }
