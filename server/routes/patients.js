@@ -14,8 +14,9 @@ router.get('/', (req, res) => {
 
 router.post('/', requireRole('admin'), (req, res) => {
   const { ward_id, name, room, beneficiary_no } = req.body;
+  if (!name || !String(name).trim()) return res.status(400).json({ error: '氏名は必須です' });
   db.run('INSERT INTO patients (ward_id, name, room, beneficiary_no) VALUES (?,?,?,?)',
-    [ward_id, name, room || '', beneficiary_no || '']);
+    [ward_id, name.trim(), room || '', beneficiary_no || '']);
   res.json({ ok: true });
 });
 
