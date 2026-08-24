@@ -5,6 +5,12 @@ const db = require('../database');
 // ---- しきい値・設定（変更しやすいようにここへ集約） ----
 const SPIKE_PCT   = 30;   // 「急増」と判定する増減率（%以上）
 const SPIKE_MIN   = 10;   // 「急増」と判定する先週合計の下限
+// 補充目安メールの対象外（入浴＝サービス、タオル類＝リネン業者のレンタル品）
+// TODO恒久対応: items テーブルに補充対象フラグ列を追加し、この定数を廃止する
+// ※ 除外は週次レポートの集計のみに効く。月次集計・請求書PDFなど請求側の処理には影響しない
+const EXCLUDED_ITEM_NAMES = ['入浴', 'バスタオル', '小タオル'];
+const EXCLUDED_PLACEHOLDERS = EXCLUDED_ITEM_NAMES.map(() => '?').join(', ');
+
 const RETRY_DELAYS = [60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000]; // 1分→5分→15分
 const LOG_PATH = path.join(__dirname, '..', '..', 'data', 'export.log');
 
@@ -80,8 +86,9 @@ function aggregateWeeklyUsage(baseDate) {
     JOIN patients p ON p.id = r.patient_id
     JOIN wards    w ON w.id = p.ward_id
     WHERE r.record_date BETWEEN ? AND ? AND i.active = 1
+      AND i.name NOT IN (${EXCLUDED_PLACEHOLDERS})
     GROUP BY i.id, w.id
-  `, [period.start, period.end]);
+  `, [period.start, period.end, ...EXCLUDED_ITEM_NAMES]);
 
   // 前々週：品目合計
   const prevRows = db.query(`
@@ -91,8 +98,9 @@ function aggregateWeeklyUsage(baseDate) {
     JOIN items    i ON i.id = r.item_id
     JOIN patients p ON p.id = r.patient_id
     WHERE r.record_date BETWEEN ? AND ? AND i.active = 1
+      AND i.name NOT IN (${EXCLUDED_PLACEHOLDERS})
     GROUP BY i.id
-  `, [period.prev_start, period.prev_end]);
+  `, [period.prev_start, period.prev_end, ...EXCLUDED_ITEM_NAMES]);
 
   const items = new Map();
   const pick = (row) => {
@@ -241,6 +249,7 @@ module.exports = {
   periodLabel,
   weekRanges,
   RETRY_DELAYS,
+  EXCLUDED_ITEM_NAMES,
   SPIKE_PCT,
   SPIKE_MIN,
 };
