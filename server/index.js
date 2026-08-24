@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const path = require('path');
 const session = require('express-session');
@@ -27,8 +29,12 @@ db.getDb().then(() => {
   app.use('/api/meal-prices', requireAuth, require('./routes/mealprices'));
   app.use('/api/pdf',         requireAuth, require('./routes/pdf'));
   app.use('/api/users',       requireAuth, require('./routes/users'));
+  app.use('/api/export',      requireAuth, require('./routes/export'));
 
   // マスタ管理の書き込みは管理者のみ（ルート内で制御）
+
+  // 週次使用量レポートのcron登録（EXPORT_ENABLED=true のときのみ）
+  require('./jobs/scheduler').initScheduler();
 
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
