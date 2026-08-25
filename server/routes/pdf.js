@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const puppeteer = require('puppeteer');
 const db = require('../database');
+const { getItemPriceMap } = require('../services/prices');
 
 router.get('/', async (req, res) => {
   try {
@@ -17,15 +18,8 @@ router.get('/', async (req, res) => {
 
     const items = db.query('SELECT * FROM items WHERE active=1 ORDER BY sort_order, id');
 
-    // 単価取得
-    const priceMap = {};
-    for (const item of items) {
-      const p = db.query(
-        'SELECT unit_price FROM prices WHERE item_id=? AND year=? AND month=?',
-        [item.id, year, month]
-      )[0];
-      priceMap[item.id] = p ? p.unit_price : 0;
-    }
+    // 単価取得（当月に設定が無ければ直近の過去月から引き継ぐ）
+    const priceMap = getItemPriceMap(year, month);
 
     // 日次実績
     const rawRecords = db.query(

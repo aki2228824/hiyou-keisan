@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const { getItemPriceMap } = require('../services/prices');
 const { requireRole } = require('../middleware/auth');
 
 router.get('/', (req, res) => {
@@ -24,19 +25,9 @@ router.put('/:id', requireRole('admin'), (req, res) => {
 // 単価一覧取得（指定月になければ直近の設定を引き継ぐ）
 router.get('/prices', (req, res) => {
   const { year, month } = req.query;
-  const rows = db.query(`
-    SELECT i.id, i.name, i.sort_order, i.active,
-           COALESCE(
-             (SELECT unit_price FROM prices
-              WHERE item_id=i.id AND year=? AND month=?),
-             (SELECT unit_price FROM prices
-              WHERE item_id=i.id AND (year*100+month) < ?*100+?
-              ORDER BY year DESC, month DESC LIMIT 1),
-             0
-           ) as unit_price
-    FROM items i
-    ORDER BY i.sort_order, i.id
-  `, [year, month, year, month]);
+  const priceMap = getItemPriceMap(year, month);
+  const rows = db.query('SELECT id, name, sort_order, active FROM items ORDER BY sort_order, id')
+    .map(r => ({ ...r, unit_price: priceMap[r.id] ?? 0 }));
   res.json(rows);
 });
 

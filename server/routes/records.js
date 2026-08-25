@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const { getItemPriceMap, getMealPrices } = require('../services/prices');
 
 router.get('/', (req, res) => {
   const { patient_id, year, month } = req.query;
@@ -67,17 +68,19 @@ router.get('/summary', (req, res) => {
   const from = `${year}-${String(month).padStart(2,'0')}-01`;
   const to   = `${year}-${String(month).padStart(2,'0')}-31`;
 
+  // 単価は当月に設定が無ければ直近の過去月から引き継ぐ（マスタ画面の表示と揃える）
+  const priceMap = getItemPriceMap(year, month);
   const totals = db.query(`
-    SELECT r.item_id, i.name, SUM(r.quantity) as total_qty,
-           COALESCE(p.unit_price, 0) as unit_price,
-           SUM(r.quantity) * COALESCE(p.unit_price, 0) as subtotal
+    SELECT r.item_id, i.name, SUM(r.quantity) as total_qty
     FROM records r
     JOIN items i ON i.id = r.item_id
-    LEFT JOIN prices p ON p.item_id=r.item_id AND p.year=? AND p.month=?
     WHERE r.patient_id=? AND r.record_date BETWEEN ? AND ?
     GROUP BY r.item_id
     ORDER BY i.sort_order, i.id
-  `, [year, month, patient_id, from, to]);
+  `, [patient_id, from, to]).map(row => {
+    const unit_price = priceMap[row.item_id] ?? 0;
+    return { ...row, unit_price, subtotal: row.total_qty * unit_price };
+  });
 
   const mealTotals = db.query(`
     SELECT SUM(breakfast) as breakfast, SUM(lunch) as lunch, SUM(dinner) as dinner,
@@ -87,10 +90,7 @@ router.get('/summary', (req, res) => {
     WHERE patient_id=? AND record_date BETWEEN ? AND ?
   `, [patient_id, from, to])[0] || { breakfast: 0, lunch: 0, dinner: 0, hospital_addition: 0, hospital_special: 0 };
 
-  const mealPrices = db.query(
-    'SELECT * FROM patient_meal_prices WHERE patient_id=? AND year=? AND month=?',
-    [patient_id, year, month]
-  )[0] || { breakfast_price: 0, lunch_price: 0, dinner_price: 0, meal_cap: 0 };
+  const mealPrices = getMealPrices(patient_id, year, month);
 
   const rawMealCost =
     (mealTotals.breakfast || 0) * (mealPrices.breakfast_price || 0) +
