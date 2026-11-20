@@ -4,9 +4,34 @@ const puppeteer = require('puppeteer');
 const db = require('../database');
 const { getItemPriceMap } = require('../services/prices');
 
+// HTMLに埋め込む文字列のエスケープ
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// 数値として読めない値は 0 にする
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
 router.get('/', async (req, res) => {
   try {
     const { patient_id, year, month } = req.query;
+
+    // 入力チェック（不正な指定のまま Chrome を起動しない）
+    if (!/^\d+$/.test(String(patient_id ?? '')) || Number(patient_id) <= 0)
+      return res.status(400).json({ error: 'patient_id が正しくありません' });
+    if (!/^\d{4}$/.test(String(year ?? '')))
+      return res.status(400).json({ error: 'year が正しくありません' });
+    if (!/^\d{1,2}$/.test(String(month ?? '')) || Number(month) < 1 || Number(month) > 12)
+      return res.status(400).json({ error: 'month が正しくありません' });
+
     const from = `${year}-${String(month).padStart(2,'0')}-01`;
     const to   = `${year}-${String(month).padStart(2,'0')}-31`;
 
@@ -20,6 +45,8 @@ router.get('/', async (req, res) => {
 
     // 単価取得（当月に設定が無ければ直近の過去月から引き継ぐ）
     const priceMap = getItemPriceMap(year, month);
+    // DBに数値以外が入っていてもHTMLへそのまま出さないよう、数値にそろえる
+    for (const id of Object.keys(priceMap)) priceMap[id] = num(priceMap[id]);
 
     // 日次実績
     const rawRecords = db.query(
@@ -29,7 +56,7 @@ router.get('/', async (req, res) => {
     const recordMap = {};
     for (const r of rawRecords) {
       if (!recordMap[r.record_date]) recordMap[r.record_date] = {};
-      recordMap[r.record_date][r.item_id] = r.quantity;
+      recordMap[r.record_date][r.item_id] = num(r.quantity);
     }
 
     // 食事実績
@@ -38,7 +65,10 @@ router.get('/', async (req, res) => {
       'SELECT record_date, breakfast, lunch, dinner, service_status, hospital_addition, hospital_special FROM meal_records WHERE patient_id=? AND record_date BETWEEN ? AND ? ORDER BY record_date',
       [patient_id, from, to]
     );
-    for (const m of meals) mealMap[m.record_date] = m;
+    for (const m of meals) {
+      for (const f of ['breakfast', 'lunch', 'dinner', 'hospital_addition', 'hospital_special']) m[f] = num(m[f]);
+      mealMap[m.record_date] = m;
+    }
 
     // 月の日数を算出
     const daysInMonth = new Date(year, month, 0).getDate();
@@ -63,11 +93,16 @@ router.get('/', async (req, res) => {
 
     const html = buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTotals, grandTotal, mealTotal, year, month });
 
+    // 描画に失敗しても Chrome のプロセスが残らないよう、必ず finally で閉じる
+    let pdf;
     const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({ format: 'A3', landscape: true, printBackground: true });
-    await browser.close();
+    try {
+      const page = await browser.newPage();
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      pdf = await page.pdf({ format: 'A3', landscape: true, printBackground: true });
+    } finally {
+      await browser.close().catch(() => {});
+    }
 
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="seikyu_${patient_id}_${year}${month}.pdf"` });
     res.send(pdf);
@@ -81,7 +116,7 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
   const reiwa = year - 2018;
 
   const itemHeaders = items.map(i =>
-    `<th class="item-h">${i.name}<br><span class="price">${priceMap[i.id].toLocaleString()}円</span></th>`
+    `<th class="item-h">${esc(i.name)}<br><span class="price">${priceMap[i.id].toLocaleString()}円</span></th>`
   ).join('');
 
   const meals = Object.values(mealMap);
@@ -96,7 +131,7 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
     return `<tr class="${isWeekend ? 'weekend' : ''}">
       <td class="center">${day}</td>
       <td class="center">${dow}</td>
-      <td class="center">${meal.service_status || ''}</td>
+      <td class="center">${esc(meal.service_status)}</td>
       <td class="num">${meal.hospital_addition || ''}</td>
       <td class="num">${meal.hospital_special || ''}</td>
       <td class="num">${meal.breakfast || ''}</td>
@@ -136,11 +171,11 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
 <div class="page">
   <h1>療養介護サービス提供実績記録票</h1>
   <div class="meta">
-    <div>令和 <span>${reiwa}</span> 年 <span>${month}</span> 月分</div>
-    <div>氏名：<span>${patient.name}</span></div>
-    <div>病棟：<span>${patient.ward_name}</span></div>
-    <div>部屋：<span>${patient.room || ''}</span></div>
-    <div>受給者証番号：<span>${patient.beneficiary_no || ''}</span></div>
+    <div>令和 <span>${esc(reiwa)}</span> 年 <span>${esc(month)}</span> 月分</div>
+    <div>氏名：<span>${esc(patient.name)}</span></div>
+    <div>病棟：<span>${esc(patient.ward_name)}</span></div>
+    <div>部屋：<span>${esc(patient.room)}</span></div>
+    <div>受給者証番号：<span>${esc(patient.beneficiary_no)}</span></div>
   </div>
   <table>
     <thead>
@@ -151,7 +186,7 @@ function buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTot
         <th rowspan="2">入院・外泊時加算</th>
         <th rowspan="2">入院時支援特別加算</th>
         <th colspan="3">食事回数</th>
-        ${items.map(i => `<th class="item-h" rowspan="2">${i.name}<br><span class="price">${priceMap[i.id].toLocaleString()}円</span></th>`).join('')}
+        ${items.map(i => `<th class="item-h" rowspan="2">${esc(i.name)}<br><span class="price">${priceMap[i.id].toLocaleString()}円</span></th>`).join('')}
       </tr>
       <tr>
         <th>朝食</th><th>昼食</th><th>夕食</th>
