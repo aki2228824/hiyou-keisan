@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { getMealPrices, getMealPriceMap } = require('../services/prices');
+const { getMealPrices, getMealPriceMap, toPrice, toPositiveInt, parseYearMonth } = require('../services/prices');
+const { requireRole } = require('../middleware/auth');
 
 // 患者の食事単価取得（指定年月、なければ直近の設定を返す）
 router.get('/', (req, res) => {
@@ -16,9 +17,25 @@ router.get('/bulk', (req, res) => {
   res.json(getMealPriceMap(year, month));
 });
 
-// 単価を保存（UPSERT）
-router.post('/', (req, res) => {
+// 単価を保存（UPSERT）※閲覧のみロールは不可
+router.post('/', requireRole('admin', 'staff'), (req, res) => {
   const { patient_id, year, month, breakfast_price, lunch_price, dinner_price, meal_cap } = req.body;
+
+  // 入力チェック（不正なリクエストは例外にせず 400 で返す）
+  const pid = toPositiveInt(patient_id);
+  if (pid === null) return res.status(400).json({ error: 'patient_id が正しくありません' });
+  const ym = parseYearMonth(year, month);
+  if (ym.error) return res.status(400).json({ error: ym.error });
+
+  // 単価・上限は数値にそろえてから保存する（未入力は 0、数値以外は 400）
+  const prices = [breakfast_price, lunch_price, dinner_price, meal_cap].map(toPrice);
+  if (prices.some(v => v === null))
+    return res.status(400).json({ error: '食事単価・上限は0以上の数値で指定してください' });
+
+  // 存在しない患者への登録を防ぐ（sql.js では外部キー制約が効かないため）
+  if (!db.query('SELECT id FROM patients WHERE id=?', [pid])[0])
+    return res.status(404).json({ error: '患者が見つかりません' });
+
   db.run(`
     INSERT INTO patient_meal_prices (patient_id, year, month, breakfast_price, lunch_price, dinner_price, meal_cap)
     VALUES (?,?,?,?,?,?,?)
@@ -27,7 +44,7 @@ router.post('/', (req, res) => {
       lunch_price=excluded.lunch_price,
       dinner_price=excluded.dinner_price,
       meal_cap=excluded.meal_cap
-  `, [patient_id, year, month, breakfast_price ?? 0, lunch_price ?? 0, dinner_price ?? 0, meal_cap ?? 0]);
+  `, [pid, ym.year, ym.month, ...prices]);
   res.json({ ok: true });
 });
 
