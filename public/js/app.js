@@ -4,7 +4,14 @@
 let currentUser = null;
 
 async function initAuth() {
-  const res = await fetch('/api/auth/me');
+  let res;
+  try {
+    res = await fetch('/api/auth/me');
+  } catch (e) {
+    showLoginError('サーバーに接続できません。ネットワークとサーバーの状態を確認してください。');
+    showLoginOverlay();
+    return;
+  }
   if (res.ok) {
     currentUser = await res.json();
     onLoggedIn();
@@ -13,12 +20,19 @@ async function initAuth() {
   }
 }
 
+function showLoginError(message) {
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = message;
+  errEl.classList.remove('hidden');
+}
+
 function showLoginOverlay() {
   document.getElementById('login-overlay').classList.remove('hidden');
   document.getElementById('login-username').focus();
-  document.getElementById('login-password').addEventListener('keydown', e => {
+  // 複数回呼ばれても二重登録にならないよう onkeydown で設定する
+  document.getElementById('login-password').onkeydown = e => {
     if (e.key === 'Enter') doLogin();
-  });
+  };
 }
 
 async function doLogin() {
@@ -27,24 +41,35 @@ async function doLogin() {
   const errEl = document.getElementById('login-error');
   errEl.classList.add('hidden');
 
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
+  let res;
+  try {
+    res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+  } catch (e) {
+    showLoginError('サーバーに接続できません。ネットワークとサーバーの状態を確認してください。');
+    return;
+  }
   if (res.ok) {
     currentUser = await res.json();
     document.getElementById('login-overlay').classList.add('hidden');
+    document.getElementById('login-password').value = '';
     onLoggedIn();
   } else {
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     errEl.textContent = data.error || 'ログインに失敗しました';
     errEl.classList.remove('hidden');
   }
 }
 
 async function doLogout() {
-  await fetch('/api/auth/logout', { method: 'POST' });
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch (e) {
+    // サーバーに届かなくても画面は読み込み直す
+  }
   currentUser = null;
   location.reload();
 }
@@ -80,14 +105,53 @@ function showPage(name) {
 }
 
 // --- API ヘルパー ---
+// 失敗（2xx以外・通信不能）のときはサーバーのエラーメッセージを持つ Error を投げる。
+// 呼び出し側で catch しなかったものは、下の unhandledrejection でまとめて画面に表示する。
 async function api(path, opts = {}) {
-  const res = await fetch('/api' + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
-  return res.json();
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (e) {
+    throw new ApiError('サーバーに接続できません。ネットワークとサーバーの状態を確認してください。', 0);
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new ApiError(data?.error || `処理に失敗しました（エラー ${res.status}）`, res.status);
+  }
+  return data;
 }
+
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// API エラーの共通表示。成功トーストの代わりにエラー内容を知らせる。
+window.addEventListener('unhandledrejection', e => {
+  if (!(e.reason instanceof ApiError)) return;
+  e.preventDefault();
+  if (e.reason.status === 401) {
+    // セッション切れ（サーバー再起動など）→ ログイン画面へ戻す
+    const overlay = document.getElementById('login-overlay');
+    if (overlay.classList.contains('hidden')) {
+      currentUser = null;
+      showLoginError('セッションが切れました。もう一度ログインしてください。');
+      showLoginOverlay();
+    }
+    return;
+  }
+  // 同じエラーを続けて何度も表示しない（閉じた直後の同一メッセージは省略）
+  if (e.reason.message === lastAlert.message && Date.now() - lastAlert.closedAt < 1000) return;
+  alert(e.reason.message);
+  lastAlert = { message: e.reason.message, closedAt: Date.now() };
+});
+let lastAlert = { message: '', closedAt: 0 };
 
 // ============================================================
 // 日次入力
@@ -107,7 +171,7 @@ async function initInputPage() {
 
   document.getElementById('ward-buttons').innerHTML = wards.map(w => `
     <button class="ward-btn ${selectedWardId==w.id?'active':''}"
-            onclick="selectWard(${w.id})">${w.name}</button>
+            onclick="selectWard(${w.id})">${esc(w.name)}</button>
   `).join('');
 
   if (selectedWardId) await loadPatients();
@@ -130,7 +194,7 @@ async function loadPatients() {
   document.getElementById('patient-list').innerHTML = active.length
     ? active.map(p => `
         <button class="patient-btn ${selectedPatientId==p.id?'active':''}"
-                onclick="selectPatient(${p.id})">${p.name}</button>
+                onclick="selectPatient(${p.id})">${esc(p.name)}</button>
       `).join('')
     : '<p class="no-patient">患者が登録されていません</p>';
 }
@@ -175,7 +239,7 @@ async function loadInputForm() {
 
   // ヘッダー
   const itemHeaders = activeItems.map(item =>
-    `<th class="col-item g-item">${item.name}<br><span class="item-price-sub">${item.unit_price.toLocaleString()}円</span></th>`
+    `<th class="col-item g-item">${esc(item.name)}<br><span class="item-price-sub">${esc(item.unit_price.toLocaleString())}円</span></th>`
   ).join('');
 
   // 行
@@ -184,23 +248,23 @@ async function loadInputForm() {
     const isWeekend = dow === 0 || dow === 6;
     const itemCells = activeItems.map(item => {
       const val = recMap[dateStr]?.[item.id] ?? 0;
-      return `<td class="g-item"><input type="number" min="0" class="cell-input" value="${val||''}"
+      return `<td class="g-item"><input type="number" min="0" class="cell-input" value="${esc(val||'')}"
                data-date="${dateStr}" data-item="${item.id}"></td>`;
     }).join('');
     return `<tr class="${isWeekend?'weekend':''}">
       <td class="col-day">${d}</td>
       <td class="col-dow ${dow===0?'sun':dow===6?'sat':''}">${DOW[dow]}</td>
-      <td class="g-svc"><input type="text" class="cell-input svc-input" value="${meal.service_status||''}"
+      <td class="g-svc"><input type="text" class="cell-input svc-input" value="${esc(meal.service_status||'')}"
            data-date="${dateStr}" data-meal="service_status"></td>
-      <td class="g-svc"><input type="number" min="0" class="cell-input" value="${meal.hospital_addition||''}"
+      <td class="g-svc"><input type="number" min="0" class="cell-input" value="${esc(meal.hospital_addition||'')}"
            data-date="${dateStr}" data-meal="hospital_addition"></td>
-      <td class="g-svc"><input type="number" min="0" class="cell-input" value="${meal.hospital_special||''}"
+      <td class="g-svc"><input type="number" min="0" class="cell-input" value="${esc(meal.hospital_special||'')}"
            data-date="${dateStr}" data-meal="hospital_special"></td>
-      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${meal.breakfast||''}"
+      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${esc(meal.breakfast||'')}"
            data-date="${dateStr}" data-meal="breakfast"></td>
-      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${meal.lunch||''}"
+      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${esc(meal.lunch||'')}"
            data-date="${dateStr}" data-meal="lunch"></td>
-      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${meal.dinner||''}"
+      <td class="g-meal"><input type="number" min="0" class="cell-input meal-input" value="${esc(meal.dinner||'')}"
            data-date="${dateStr}" data-meal="dinner"></td>
       ${itemCells}
     </tr>`;
@@ -234,16 +298,16 @@ async function loadInputForm() {
   document.getElementById('input-form').innerHTML = `
     <div class="monthly-card">
       <div class="monthly-header">
-        <span class="monthly-title">${year}年${Number(month)}月　実績入力</span>
+        <span class="monthly-title">${esc(year)}年${Number(month)}月　実績入力</span>
         <button onclick="saveAllRecords()" class="btn-primary">一括保存</button>
       </div>
       <div class="meal-price-bar">
         <span class="meal-price-label">食事単価</span>
-        <label>朝食 <input type="number" min="0" id="mp-breakfast" value="${mealPrices.breakfast_price||''}" placeholder="0"> 円</label>
-        <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${mealPrices.lunch_price||''}"     placeholder="0"> 円</label>
-        <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${mealPrices.dinner_price||''}"    placeholder="0"> 円</label>
-        <label>食事費上限 <input type="number" min="0" id="mp-cap" value="${mealPrices.meal_cap||''}" placeholder="上限なし" style="width:90px"> 円</label>
-        <button onclick="saveMealPrices('${patientId}','${year}','${month}')" class="btn-sm">単価保存</button>
+        <label>朝食 <input type="number" min="0" id="mp-breakfast" value="${esc(mealPrices.breakfast_price||'')}" placeholder="0"> 円</label>
+        <label>昼食 <input type="number" min="0" id="mp-lunch"     value="${esc(mealPrices.lunch_price||'')}"     placeholder="0"> 円</label>
+        <label>夕食 <input type="number" min="0" id="mp-dinner"    value="${esc(mealPrices.dinner_price||'')}"    placeholder="0"> 円</label>
+        <label>食事費上限 <input type="number" min="0" id="mp-cap" value="${esc(mealPrices.meal_cap||'')}" placeholder="上限なし" style="width:90px"> 円</label>
+        <button onclick="saveMealPrices(${Number(patientId)},${Number(year)},${Number(month)})" class="btn-sm">単価保存</button>
         <span class="item-cost-disp">日用品費合計：<strong id="item-cost-total">${initItemCost.toLocaleString()}</strong> 円</span>
         <span class="meal-cost-disp">食事費合計：<strong id="meal-cost-total">${initMealCost.toLocaleString()}</strong> 円<span id="meal-cap-label" class="cap-label"></span></span>
       </div>
@@ -407,7 +471,7 @@ async function initSummaryPage() {
 
   document.getElementById('sum-ward-buttons').innerHTML = wards.map(w => `
     <button class="ward-btn ${selectedSummaryWardId==w.id?'active':''}"
-            onclick="selectSummaryWard(${w.id})">${w.name}</button>
+            onclick="selectSummaryWard(${w.id})">${esc(w.name)}</button>
   `).join('');
 }
 
@@ -438,15 +502,15 @@ async function loadSummary() {
 
   const tbody = summaries.map(s => `
     <tr>
-      <td>${s.ward_name}</td>
-      <td>${s.name}</td>
-      <td class="num">${s.mealTotals?.breakfast||0}</td>
-      <td class="num">${s.mealTotals?.lunch||0}</td>
-      <td class="num">${s.mealTotals?.dinner||0}</td>
-      <td class="num">${(s.mealCost||0).toLocaleString()} 円</td>
-      <td class="num">${(s.itemTotal||0).toLocaleString()} 円</td>
-      <td class="num grand">${(s.grandTotal||0).toLocaleString()} 円</td>
-      <td><a class="pdf-btn" href="/api/pdf?patient_id=${s.id}&year=${year}&month=${month}" target="_blank">PDF</a></td>
+      <td>${esc(s.ward_name)}</td>
+      <td>${esc(s.name)}</td>
+      <td class="num">${esc(s.mealTotals?.breakfast||0)}</td>
+      <td class="num">${esc(s.mealTotals?.lunch||0)}</td>
+      <td class="num">${esc(s.mealTotals?.dinner||0)}</td>
+      <td class="num">${esc((s.mealCost||0).toLocaleString())} 円</td>
+      <td class="num">${esc((s.itemTotal||0).toLocaleString())} 円</td>
+      <td class="num grand">${esc((s.grandTotal||0).toLocaleString())} 円</td>
+      <td><a class="pdf-btn" href="/api/pdf?patient_id=${Number(s.id)}&year=${Number(year)}&month=${Number(month)}" target="_blank">PDF</a></td>
     </tr>`).join('');
 
   document.getElementById('summary-table').innerHTML = `
@@ -462,6 +526,11 @@ async function loadSummary() {
 // マスタ管理
 // ============================================================
 let selectedMasterWardId = null;
+
+// 表示中の一覧データ（削除確認で名前を引くために保持する）
+let masterPatients = [];
+let masterItems    = [];
+let masterUsers    = [];
 
 function showMasterTab(name) {
   document.querySelectorAll('.master-tab').forEach(t => t.classList.add('hidden'));
@@ -481,9 +550,10 @@ async function initMasterPage() {
 // --- 患者管理 ---
 async function renderMasterPatients() {
   const [wards, patients] = await Promise.all([api('/wards'), api('/patients')]);
+  masterPatients = patients;
   const wardBtns = wards.map(w => `
     <button class="ward-btn ${selectedMasterWardId==w.id?'active':''}"
-            onclick="selectMasterWard(${w.id})">${w.name}</button>
+            onclick="selectMasterWard(${w.id})">${esc(w.name)}</button>
   `).join('');
 
   const filtered = selectedMasterWardId
@@ -493,13 +563,13 @@ async function renderMasterPatients() {
   const rows = filtered.map(p => `
     <tr>
       <td><select onchange="updatePatient(${p.id},'ward_id',this.value)">${
-        wards.map(w=>`<option value="${w.id}" ${w.id==p.ward_id?'selected':''}>${w.name}</option>`).join('')
+        wards.map(w=>`<option value="${w.id}" ${w.id==p.ward_id?'selected':''}>${esc(w.name)}</option>`).join('')
       }</select></td>
-      <td><input value="${p.name}" onblur="updatePatient(${p.id},'name',this.value)"></td>
-      <td><input value="${p.room||''}" onblur="updatePatient(${p.id},'room',this.value)" style="width:60px"></td>
-      <td><input value="${p.beneficiary_no||''}" onblur="updatePatient(${p.id},'beneficiary_no',this.value)"></td>
+      <td><input value="${esc(p.name)}" onblur="updatePatient(${p.id},'name',this.value)"></td>
+      <td><input value="${esc(p.room||'')}" onblur="updatePatient(${p.id},'room',this.value)" style="width:60px"></td>
+      <td><input value="${esc(p.beneficiary_no||'')}" onblur="updatePatient(${p.id},'beneficiary_no',this.value)"></td>
       <td><label><input type="checkbox" ${p.active?'checked':''} onchange="updatePatient(${p.id},'active',this.checked?1:0)"> 有効</label></td>
-      <td><button onclick="deletePatient(${p.id},'${p.name.replace(/'/g,'&#39;')}')" class="btn-danger">削除</button></td>
+      <td><button onclick="deletePatient(${p.id})" class="btn-danger">削除</button></td>
     </tr>`).join('');
 
   const mainContent = selectedMasterWardId ? `
@@ -533,10 +603,16 @@ async function updatePatient(id, field, value) {
   const p = patients.find(x => x.id == id);
   if (!p) return;
   p[field] = value;
-  await api(`/patients/${id}`, { method: 'PUT', body: p });
+  try {
+    await api(`/patients/${id}`, { method: 'PUT', body: p });
+  } catch (e) {
+    renderMasterPatients().catch(() => {}); // 保存できなかった入力を元の値に戻す
+    throw e;
+  }
 }
 
-async function deletePatient(id, name) {
+async function deletePatient(id) {
+  const name = masterPatients.find(x => x.id == id)?.name ?? '';
   if (!confirm(`「${name}」を削除しますか？\nこの患者の全実績データも削除されます。`)) return;
   await api(`/patients/${id}`, { method: 'DELETE' });
   renderMasterPatients();
@@ -554,13 +630,14 @@ async function addPatient() {
 // --- 物品管理 ---
 async function renderMasterItems() {
   const items = await api('/items');
+  masterItems = items;
   const rows = items.map(item => `
     <tr>
-      <td><input type="number" value="${item.sort_order}" style="width:50px"
+      <td><input type="number" value="${esc(item.sort_order)}" style="width:50px"
            onblur="updateItem(${item.id},'sort_order',this.value)"></td>
-      <td><input value="${item.name}" onblur="updateItem(${item.id},'name',this.value)"></td>
+      <td><input value="${esc(item.name)}" onblur="updateItem(${item.id},'name',this.value)"></td>
       <td><label><input type="checkbox" ${item.active?'checked':''} onchange="updateItem(${item.id},'active',this.checked?1:0)"> 有効</label></td>
-      <td><button onclick="deleteItem(${item.id},'${item.name.replace(/'/g,'&#39;')}')" class="btn-danger">削除</button></td>
+      <td><button onclick="deleteItem(${item.id})" class="btn-danger">削除</button></td>
     </tr>`).join('');
 
   document.getElementById('master-items').innerHTML = `
@@ -579,10 +656,16 @@ async function updateItem(id, field, value) {
   const item = items.find(x => x.id == id);
   if (!item) return;
   item[field] = value;
-  await api(`/items/${id}`, { method: 'PUT', body: item });
+  try {
+    await api(`/items/${id}`, { method: 'PUT', body: item });
+  } catch (e) {
+    renderMasterItems().catch(() => {}); // 保存できなかった入力を元の値に戻す
+    throw e;
+  }
 }
 
-async function deleteItem(id, name) {
+async function deleteItem(id) {
+  const name = masterItems.find(x => x.id == id)?.name ?? '';
   if (!confirm(`「${name}」を削除しますか？\nこの物品の全実績データも削除されます。`)) return;
   await api(`/items/${id}`, { method: 'DELETE' });
   renderMasterItems();
@@ -619,8 +702,8 @@ async function loadPriceTable() {
 
   const rows = items.map(item => `
     <tr>
-      <td>${item.name} ${item.active?'':'<span class="badge-inactive">（無効）</span>'}</td>
-      <td><input type="number" min="0" value="${item.unit_price}"
+      <td>${esc(item.name)} ${item.active?'':'<span class="badge-inactive">（無効）</span>'}</td>
+      <td><input type="number" min="0" value="${esc(item.unit_price)}"
            id="price-${item.id}" data-id="${item.id}" style="width:90px;text-align:right"> 円</td>
     </tr>`).join('');
 
@@ -647,18 +730,19 @@ async function savePrices() {
 // --- ユーザー管理 ---
 async function renderMasterUsers() {
   const users = await api('/users');
+  masterUsers = users;
   const roleOpts = (cur) => ['admin','staff','viewer'].map(r =>
-    `<option value="${r}" ${r===cur?'selected':''}>${roleName(r)}</option>`
+    `<option value="${r}" ${r===cur?'selected':''}>${esc(roleName(r))}</option>`
   ).join('');
 
   const rows = users.map(u => `
     <tr>
-      <td><input id="u-name-${u.id}" value="${u.username}" style="width:110px"></td>
+      <td><input id="u-name-${u.id}" value="${esc(u.username)}" style="width:110px"></td>
       <td><select id="u-role-${u.id}">${roleOpts(u.role)}</select></td>
       <td><input type="password" id="u-pass-${u.id}" placeholder="変更する場合のみ入力" style="width:150px"></td>
       <td><label><input type="checkbox" id="u-active-${u.id}" ${u.active?'checked':''}> 有効</label></td>
       <td><button onclick="saveUser(${u.id})" class="btn-sm btn-register">登録</button></td>
-      <td><button onclick="deleteUser(${u.id},'${u.username.replace(/'/g,'&#39;')}')" class="btn-danger">削除</button></td>
+      <td><button onclick="deleteUser(${u.id})" class="btn-danger">削除</button></td>
     </tr>`).join('');
 
   document.getElementById('master-users').innerHTML = `
@@ -684,15 +768,21 @@ async function saveUser(id) {
   const body = { username, role, active };
   if (password) body.password = password;
 
-  await api(`/users/${id}`, { method: 'PUT', body });
+  try {
+    await api(`/users/${id}`, { method: 'PUT', body });
+  } catch (e) {
+    renderMasterUsers().catch(() => {}); // 保存できなかった入力を元の値に戻す
+    throw e;
+  }
   document.getElementById(`u-pass-${id}`).value = '';
   showToast(`「${username}」の情報を更新しました`);
 }
 
-async function deleteUser(id, username) {
+async function deleteUser(id) {
+  const username = masterUsers.find(x => x.id == id)?.username ?? '';
   if (!confirm(`ユーザー「${username}」を削除しますか？`)) return;
-  const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-  if (!res.ok) { const d = await res.json(); return alert(d.error); }
+  // 失敗時のメッセージ表示・セッション切れの処理は api() の共通処理に任せる
+  await api(`/users/${id}`, { method: 'DELETE' });
   renderMasterUsers();
 }
 
@@ -708,6 +798,16 @@ async function addUser() {
 // ============================================================
 // ユーティリティ
 // ============================================================
+// HTMLに埋め込む文字列のエスケープ（DBや入力由来の値は必ずこれを通す）
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function showToast(msg) {
   const t = document.createElement('div');
   t.textContent = msg;
