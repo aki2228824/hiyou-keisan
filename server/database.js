@@ -2,9 +2,13 @@ const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'hiyou.db');
+// DBファイルの場所。環境変数 DB_PATH があればそれを使い、無ければ従来どおり data/hiyou.db
+const DB_PATH = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.join(__dirname, '..', 'data', 'hiyou.db');
 
 let db;
+let initialAdminCreated = false; // 今回の起動で初期管理者を作成したか
 
 async function getDb() {
   if (db) return db;
@@ -133,6 +137,7 @@ function seedAdminUser() {
   if (count > 0) return;
   const hash = bcrypt.hashSync('admin123', 10);
   db.run("INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')", [hash]);
+  initialAdminCreated = true;
 }
 
 function seedInitialData() {
@@ -182,4 +187,8 @@ function run(sql, params = []) {
   save();
 }
 
-module.exports = { getDb, query, run, save };
+function wasInitialAdminCreated() {
+  return initialAdminCreated;
+}
+
+module.exports = { getDb, query, run, save, wasInitialAdminCreated };
