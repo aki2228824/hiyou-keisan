@@ -261,4 +261,5 @@ function wasInitialAdminCreated() {
   return initialAdminCreated;
 }
 
-module.exports = { getDb, query, run, save, transaction, wasInitialAdminCreated };
+// dbPath: DBファイルの場所（操作ログの既定の保存先を「DBと同じフォルダの audit」にするために使う）
+module.exports = { getDb, query, run, save, transaction, wasInitialAdminCreated, dbPath: DB_PATH };

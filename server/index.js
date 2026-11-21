@@ -12,20 +12,60 @@ const express = require('express');
 const path = require('path');
 const session = require('express-session');
 const db = require('./database');
+const audit = require('./services/auditLog');
+const { auditMiddleware } = require('./middleware/audit');
 const { requireAuth, requireRole } = require('./middleware/auth');
 
+// .env の TRUST_PROXY を Express の 'trust proxy' の値にする。未設定・空・false・0 は「信用しない」（undefined を返す）。
+//   loopback … 同じ機械の上のリバースプロキシ（Caddy など）から受けるとき
+//   1        … 1段だけ手前にあるプロキシ（NAS内蔵のリバースプロキシ → コンテナ）から受けるとき
+// true は受け付けない（どこから来た要求でも、ヘッダーに書かれた接続元とHTTPSの情報を信用してしまうため）。
+function parseTrustProxy(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value || value === '0' || value.toLowerCase() === 'false') return undefined;
+  if (value.toLowerCase() === 'true')
+    throw new Error('TRUST_PROXY=true は使えません。loopback（同じ機械のプロキシ）か 1（1段手前のプロキシ）を指定してください。');
+  return /^\d+$/.test(value) ? Number(value) : value;
+}
+
 const app = express();
-app.use(express.json());
+
+// リバースプロキシ（HTTPS終端）の背後で動かすとき用。.env に TRUST_PROXY を書いたときだけ有効になる。
+// 有効にすると、プロキシが付けた「HTTPSで届いた」「本当の接続元」という情報を信用する
+// （ログイン用 Cookie に Secure 属性が付き、操作ログにはプロキシではなく利用者のPCのIPアドレスが残る）。
+let trustProxy;
+try {
+  trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+  if (trustProxy !== undefined) app.set('trust proxy', trustProxy);
+} catch (err) {
+  console.error(`.env の TRUST_PROXY の値が正しくありません（${process.env.TRUST_PROXY}）: ${err.message}`);
+  process.exit(1);
+}
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'hiyou-keisan-secret-2026',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 8 * 60 * 60 * 1000 }, // 8時間
+  // sameSite:'lax' = ほかのサイトのページから送らせた要求（POST など）にはログイン状態を付けない
+  // secure:'auto'  = HTTPS で届いた要求にだけ Secure 属性を付ける（HTTP での直接アクセスも従来どおり動く）
+  cookie: { maxAge: 8 * 60 * 60 * 1000, sameSite: 'lax', secure: 'auto' }, // 8時間
 }));
+
+// 操作ログ。JSON の読み取りに失敗した要求（400）も記録できるよう、express.json() より前に置く
+app.use(auditMiddleware);
+app.use(express.json());
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 db.getDb().then(() => {
+  // 操作ログの保存先を用意する（使えないときは、記録なしで動き続けないよう、ここで起動を止める）
+  try {
+    console.log(`操作ログ: ${audit.init(db.dbPath)}`);
+  } catch (err) {
+    console.error('操作ログの初期化エラー:', err.message);
+    process.exit(1);
+  }
+
   // 認証（ログイン不要）
   app.use('/api/auth', require('./routes/auth'));
 
@@ -38,6 +78,7 @@ db.getDb().then(() => {
   app.use('/api/pdf',         requireAuth, require('./routes/pdf'));
   app.use('/api/users',       requireAuth, require('./routes/users'));
   app.use('/api/export',      requireAuth, require('./routes/export'));
+  app.use('/api/audit',       requireAuth, require('./routes/audit'));
 
   // ロールごとの書き込み制限は各ルート内で制御（requireRole）
 
@@ -65,10 +106,19 @@ db.getDb().then(() => {
   });
 
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`療養介護サービス提供実績記録票 起動: http://localhost:${PORT}`);
+  // HOST=127.0.0.1 にすると、同じ機械のリバースプロキシ経由でしか接続できなくなる（未設定なら従来どおり全インターフェース）
+  const HOST = String(process.env.HOST ?? '').trim() || undefined;
+  app.listen(PORT, HOST, () => {
+    console.log(`療養介護サービス提供実績記録票 起動: http://localhost:${PORT}` +
+      (HOST ? `（待ち受けは ${HOST} のみ）` : ''));
+    if (trustProxy !== undefined)
+      console.log(`リバースプロキシ: TRUST_PROXY=${trustProxy}（プロキシが伝える接続元と HTTPS の情報を信用します）`);
     if (db.wasInitialAdminCreated())
       console.log('初期管理者を作成しました: admin / admin123（ログイン後にパスワードを変更してください）');
+    audit.recordSystem('server.start', {
+      node: process.version, port: String(PORT), host: HOST || '(すべて)',
+      trust_proxy: trustProxy === undefined ? '(なし)' : String(trustProxy),
+    });
   });
 }).catch(err => {
   console.error('DB初期化エラー:', err);

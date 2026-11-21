@@ -39,14 +39,15 @@ router.get('/prices', (req, res) => {
 
 router.delete('/:id', requireRole('admin'), (req, res) => {
   const id = req.params.id;
-  if (!db.query('SELECT id FROM items WHERE id=?', [id])[0])
-    return res.status(404).json({ error: '物品が見つかりません' });
+  const target = db.query('SELECT id, name FROM items WHERE id=?', [id])[0];
+  if (!target) return res.status(404).json({ error: '物品が見つかりません' });
   // 関連データごと「全部消す／何も消さない」のどちらかにする（途中で止まって一部だけ消えた状態を残さない）
   db.transaction(() => {
     db.run('DELETE FROM records WHERE item_id=?', [id]);
     db.run('DELETE FROM prices WHERE item_id=?', [id]);
     db.run('DELETE FROM items WHERE id=?', [id]);
   });
+  res.locals.auditDetail = { name: target.name };   // 操作ログに、削除した物品名を残す
   res.json({ ok: true });
 });
 

@@ -8,6 +8,7 @@
 // ・元のDBファイルには書き込まない（OSの一時フォルダへコピーして使い、終わったら消す）。
 //   対象のDBが無いときは、新規のDBで実行する。
 // ・コピーにテスト用の管理者を追加してログインするので、実際のユーザーのパスワードは使わない。
+// ・操作ログも一時フォルダへ書く（本番の操作ログには何も書かない）。
 // ・週次レポートは送信しない（EXPORT_ENABLED=false で起動し、ドライランだけを呼ぶ）。
 // ・ポート 3150 を使う（変えるときは環境変数 SMOKE_PORT）。本番のサーバーが動いていても実行できる。
 // ・請求書PDFも1枚作るので、Chrome が入っていること（npm ci 済みであること）。所要 10〜20 秒。
@@ -22,6 +23,10 @@ const APP = path.join(__dirname, '..');
 const PORT = Number(process.env.SMOKE_PORT) || 3150;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TEST_ADMIN = 'smoke_admin';
+const TEST_WEAK = 'smoke_weak';                 // 基準を満たさないパスワードのユーザー（コピーのDBへ直接入れる）
+const WEAK_PASSWORD = 'weakpass1';
+const TEST_PASSWORD = 'Kensa-you-9w3x7k2m';     // テスト中に作るユーザー用。パスワードの基準を満たすもの
+const MAX_FAILURES = 5;                         // このテストで起動するサーバーの設定（下の env で指定する）
 
 // 動作検証.md の P-02 に記録した金額（開発用テストデータの 2026年8月分）
 const RECORDED = [
@@ -61,35 +66,40 @@ function sourceDbPath() {
   return path.join(APP, 'data', 'hiyou.db');
 }
 
-// DBをコピーし、コピーにテスト用の管理者を追加する。戻り値はログインに使うIDとパスワード
+// DBをコピーし、コピーにテスト用のユーザーを追加する。戻り値はログインに使うIDとパスワード
 async function prepareCopy(src, copy) {
   fs.copyFileSync(src, copy);
   const SQL = await require('sql.js')();
   const db = new SQL.Database(fs.readFileSync(copy));
   const hasUsers = db.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").length > 0;
   if (!hasUsers) { db.close(); return { username: 'admin', password: 'admin123' }; } // 起動時に初期管理者が作られる
+  const bcrypt = require('bcryptjs');
   const password = crypto.randomBytes(12).toString('hex');
-  db.run('DELETE FROM users WHERE username=?', [TEST_ADMIN]);
+  db.run('DELETE FROM users WHERE username IN (?, ?)', [TEST_ADMIN, TEST_WEAK]);
   db.run("INSERT INTO users (username, password_hash, role, active) VALUES (?, ?, 'admin', 1)",
-    [TEST_ADMIN, require('bcryptjs').hashSync(password, 10)]);
+    [TEST_ADMIN, bcrypt.hashSync(password, 10)]);
+  db.run("INSERT INTO users (username, password_hash, role, active) VALUES (?, ?, 'viewer', 1)",
+    [TEST_WEAK, bcrypt.hashSync(WEAK_PASSWORD, 10)]);
   fs.writeFileSync(copy, Buffer.from(db.export()));
   db.close();
   return { username: TEST_ADMIN, password };
 }
 
-// ログイン状態（Cookie）を保持する簡易クライアント
-function client() {
+// ログイン状態（Cookie）を保持する簡易クライアント。headers を渡すと毎回そのヘッダーを付ける
+function client(headers = {}) {
   let cookie = '';
-  return async (method, url, body) => {
+  const call = async (method, url, body) => {
     const res = await fetch(BASE + url, {
       method,
-      headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      headers: { 'Content-Type': 'application/json', ...headers, ...(cookie ? { Cookie: cookie } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
     const set = res.headers.get('set-cookie');
-    if (set) cookie = set.split(';')[0];
+    if (set) { cookie = set.split(';')[0]; call.lastSetCookie = set; }
     return res;
   };
+  call.lastSetCookie = '';
+  return call;
 }
 
 (async () => {
@@ -98,6 +108,7 @@ function client() {
   const before = hasSource ? sha256(src) : null;
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'hiyou-smoke-'));
   const copy = path.join(work, 'hiyou.db');
+  const auditDir = path.join(work, 'audit');
   console.log(`対象: ${hasSource ? src + ' のコピー' : '新規のDB（' + src + ' が無いため）'}`);
   console.log(`作業用フォルダ: ${work} / ポート ${PORT} / Node ${process.version}\n`);
 
@@ -111,9 +122,14 @@ function client() {
 
   const login = hasSource ? await prepareCopy(src, copy) : { username: 'admin', password: 'admin123' };
 
+  // .env より環境変数が優先されるので、ここで指定した値でテストできる（本番の設定には影響しない）
   server = spawn(process.execPath, [path.join(APP, 'server', 'index.js')], {
     cwd: APP,
-    env: { ...process.env, DB_PATH: copy, PORT: String(PORT), EXPORT_ENABLED: 'false' },
+    env: {
+      ...process.env, DB_PATH: copy, PORT: String(PORT), HOST: '127.0.0.1', EXPORT_ENABLED: 'false',
+      AUDIT_LOG_DIR: auditDir, TRUST_PROXY: 'loopback',
+      PASSWORD_MIN_LENGTH: '13', LOGIN_MAX_FAILURES: String(MAX_FAILURES), LOGIN_LOCK_MINUTES: '15',
+    },
   });
   let log = '', exited = false;
   server.stdout.on('data', d => (log += d));
@@ -138,11 +154,16 @@ function client() {
     const asTestAdmin = login.username === TEST_ADMIN;
     check(`管理者でログイン（${asTestAdmin ? 'テスト用のユーザー' : '新規DBの初期管理者'}）`, res.status === 200, `status ${res.status}`);
     if (res.status !== 200) throw new Error('ログインできないため以降を省略');
+    const loginBody = await res.json();
+    check('ログイン用 Cookie は HttpOnly・SameSite=Lax（HTTP では Secure なし）',
+      /HttpOnly/i.test(admin.lastSetCookie) && /SameSite=Lax/i.test(admin.lastSetCookie) && !/;\s*Secure/i.test(admin.lastSetCookie));
+    if (!asTestAdmin)
+      check('初期パスワードでのログインには「基準を満たしていない」注意が付く', typeof loginBody.password_warning === 'string');
 
     const wards = await (await admin('GET', '/api/wards')).json();
     let patients = await (await admin('GET', '/api/patients')).json();
     const users = await (await admin('GET', '/api/users')).json();
-    console.log(`     病棟 ${wards.length} 件 / 患者 ${patients.length} 名 / ユーザー ${users.length} 件${asTestAdmin ? '（テスト用の管理者を含む）' : ''}`);
+    console.log(`     病棟 ${wards.length} 件 / 患者 ${patients.length} 名 / ユーザー ${users.length} 件${asTestAdmin ? '（テスト用のユーザー2件を含む）' : ''}`);
 
     // 患者が1人もいないDB（新規など）では、コピー上にテスト用の患者を作って続ける
     if (!patients.length) {
@@ -175,24 +196,105 @@ function client() {
     const pdf = await admin('GET', `/api/pdf?patient_id=${pdfTarget.id}&year=${pdfTarget.year}&month=${pdfTarget.month}`);
     const buf = Buffer.from(await pdf.arrayBuffer());
     check(`請求書PDF 患者ID=${pdfTarget.id} ${pdfTarget.year}年${pdfTarget.month}月`,
-      pdf.status === 200 && buf.subarray(0, 4).toString() === '%PDF', `status ${pdf.status}, ${buf.length} バイト`);
+      pdf.status === 200 && buf.subarray(0, 4).toString() === '%PDF' && /application\/pdf/.test(pdf.headers.get('content-type') || ''),
+      `status ${pdf.status}, ${buf.length} バイト`);
     check('PDF出力後もサーバーが動作', (await admin('GET', '/api/wards')).status === 200);
 
+    // パスワードの基準（弱いパスワードは登録できない）
+    const mk = async (username, role, password = TEST_PASSWORD) => (await admin('POST', '/api/users', { username, password, role })).status;
+    check('短いパスワード（11文字）のユーザー作成は 400', (await mk('smoke_short', 'viewer', 'Test-pass-1')) === 400);
+    check('数字の無いパスワードのユーザー作成は 400', (await mk('smoke_nodigit', 'viewer', 'kensa-you-pasu-wo-kimeru')) === 400);
+    check('ユーザーIDを含むパスワードのユーザー作成は 400', (await mk('smoke_viewer', 'viewer', 'smoke_viewer-9w3x7k2m')) === 400);
+
     // 権限（コピー上に「閲覧のみ」「一般スタッフ」を作って確認）
-    const mk = async (username, role) => (await admin('POST', '/api/users', { username, password: 'Test-pass-1', role })).status;
     check('閲覧のみユーザー作成', (await mk('smoke_viewer', 'viewer')) === 200);
     check('一般スタッフ作成', (await mk('smoke_staff', 'staff')) === 200);
     const viewer = client(), staff = client();
-    await viewer('POST', '/api/auth/login', { username: 'smoke_viewer', password: 'Test-pass-1' });
-    await staff('POST', '/api/auth/login', { username: 'smoke_staff', password: 'Test-pass-1' });
+    const viewerLogin = await viewer('POST', '/api/auth/login', { username: 'smoke_viewer', password: TEST_PASSWORD });
+    check('基準を満たすパスワードでのログインには注意が付かない', viewerLogin.status === 200 && !('password_warning' in await viewerLogin.json()));
+    await staff('POST', '/api/auth/login', { username: 'smoke_staff', password: TEST_PASSWORD });
     const rec = { patient_id: patients[0].id, record_date: '2026-11-01', items: [], meal: { breakfast: 1 } };
     check('閲覧のみ：実績保存は 403', (await viewer('POST', '/api/records', rec)).status === 403);
     check('閲覧のみ：月次集計は 200', (await viewer('GET', `/api/records/summary?patient_id=${patients[0].id}&year=2026&month=8`)).status === 200);
     check('一般スタッフ：実績保存は 200', (await staff('POST', '/api/records', rec)).status === 200);
     check('一般スタッフ：病棟追加は 403', (await staff('POST', '/api/wards', { name: 'x' })).status === 403);
     check('一般スタッフ：ユーザー一覧は 403', (await staff('GET', '/api/users')).status === 403);
+    check('一般スタッフ：操作ログは 403', (await staff('GET', '/api/audit')).status === 403);
+    check('未ログイン：操作ログは 401', (await anon('GET', '/api/audit')).status === 401);
     check('不正な日付の実績保存は 400', (await admin('POST', '/api/records', { ...rec, record_date: '2026-02-30' })).status === 400);
     check('週次レポートのドライラン（送信なし）は 200', (await admin('POST', '/api/export/weekly-usage/run?dry=1')).status === 200);
+
+    // パスワードの変更（基準と「現在と同じものは不可」）
+    const viewerRow = (await (await admin('GET', '/api/users')).json()).find(u => u.username === 'smoke_viewer');
+    const put = body => admin('PUT', `/api/users/${viewerRow.id}`, { username: 'smoke_viewer', role: 'viewer', active: 1, ...body });
+    check('パスワード変更：弱いものは 400', (await put({ password: 'abc' })).status === 400);
+    check('パスワード変更：現在と同じものは 400', (await put({ password: TEST_PASSWORD })).status === 400);
+    check('パスワードを入力しない更新は 200（パスワードは変わらない）', (await put({})).status === 200);
+
+    // 基準を満たさないパスワードのユーザー（基準ができる前に登録されたユーザーに相当）
+    if (asTestAdmin) {
+      const r = await client()('POST', '/api/auth/login', { username: TEST_WEAK, password: WEAK_PASSWORD });
+      check('基準を満たさないパスワードでもログインでき、注意が付く', r.status === 200 && typeof (await r.json()).password_warning === 'string');
+    }
+
+    // ログイン失敗の連続によるロック
+    const attacker = client();
+    const wrong = () => attacker('POST', '/api/auth/login', { username: 'smoke_viewer', password: 'chigau-pasuwa-do-0000' });
+    const statuses = [];
+    for (let i = 0; i < MAX_FAILURES; i++) statuses.push((await wrong()).status);
+    check(`間違ったパスワード ${MAX_FAILURES} 回：${MAX_FAILURES - 1} 回目までは 401、${MAX_FAILURES} 回目でロック（429）`,
+      statuses.slice(0, -1).every(s => s === 401) && statuses[statuses.length - 1] === 429, statuses.join(','));
+    check('ロック中は正しいパスワードでも 429', (await client()('POST', '/api/auth/login', { username: 'smoke_viewer', password: TEST_PASSWORD })).status === 429);
+    check('ロック中でも、ログイン済みの画面はそのまま使える', (await viewer('GET', '/api/wards')).status === 200);
+    check('ほかのユーザーはログインできる', (await client()('POST', '/api/auth/login', { username: 'smoke_staff', password: TEST_PASSWORD })).status === 200);
+    const lockedRow = (await (await admin('GET', '/api/users')).json()).find(u => u.username === 'smoke_viewer');
+    check('ユーザー一覧にロックの残り時間が出る', lockedRow && lockedRow.locked_seconds > 0, `残り ${lockedRow && lockedRow.locked_seconds} 秒`);
+    check('一般スタッフ：ロック解除は 403', (await staff('POST', `/api/users/${viewerRow.id}/unlock`)).status === 403);
+    check('管理者：ロック解除は 200', (await admin('POST', `/api/users/${viewerRow.id}/unlock`)).status === 200);
+    check('解除後は正しいパスワードでログインできる', (await client()('POST', '/api/auth/login', { username: 'smoke_viewer', password: TEST_PASSWORD })).status === 200);
+    // 実在しないユーザーIDでも同じ応答になる（IDが実在するかを外から調べられない）
+    const ghost = [];
+    for (let i = 0; i < MAX_FAILURES + 1; i++)
+      ghost.push((await client()('POST', '/api/auth/login', { username: 'smoke_no_such_user', password: 'chigau-pasuwa-do-0000' })).status);
+    check('実在しないユーザーIDでも、同じ回数でロックの応答になる',
+      ghost.slice(0, MAX_FAILURES - 1).every(s => s === 401) && ghost.slice(MAX_FAILURES - 1).every(s => s === 429), ghost.join(','));
+
+    // リバースプロキシ（HTTPS終端）経由を模した要求では、Cookie に Secure が付く
+    const viaProxy = client({ 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '192.168.1.77' });
+    const proxied = await viaProxy('POST', '/api/auth/login', { username: 'smoke_staff', password: TEST_PASSWORD });
+    check('HTTPS のプロキシ経由（X-Forwarded-Proto: https）のログインは Cookie に Secure が付く',
+      proxied.status === 200 && /;\s*Secure/i.test(viaProxy.lastSetCookie), viaProxy.lastSetCookie.replace(/=[^;]*/, '=…'));
+
+    // ログアウト
+    check('ログアウトは 200、その後は 401', (await viaProxy('POST', '/api/auth/logout')).status === 200 && (await viaProxy('GET', '/api/patients')).status === 401);
+
+    // 操作ログ
+    const auditRes = await admin('GET', '/api/audit?limit=5000');
+    const audit = auditRes.status === 200 ? await auditRes.json() : { rows: [] };
+    const has = (action, cond = () => true) => audit.rows.some(r => r.action === action && cond(r));
+    check('操作ログ：ログイン成功・失敗・ロック・ログアウトが記録されている',
+      has('login.success', r => r.user === login.username) && has('login.failure', r => r.user === 'smoke_viewer' && r.status === 401) &&
+      has('login.failure', r => r.user === 'smoke_viewer' && r.status === 429) && has('login.locked', r => r.user === 'smoke_viewer') &&
+      has('logout', r => r.user === 'smoke_staff'));
+    check('操作ログ：実績の保存・断られた保存・表示・PDF出力が、ユーザーと患者つきで記録されている',
+      has('records.save', r => r.user === 'smoke_staff' && r.status === 200 && r.patient_id === patients[0].id) &&
+      has('records.save', r => r.user === 'smoke_viewer' && r.status === 403) &&
+      has('summary.view', r => r.user === 'smoke_viewer') &&
+      has('pdf.export', r => r.user === login.username && r.patient_id === pdfTarget.id && r.status === 200));
+    check('操作ログ：ユーザーの追加・ロック解除、未ログインでのアクセスが記録されている',
+      has('users.create', r => r.status === 200) && has('users.create', r => r.status === 400) &&
+      has('users.unlock', r => r.status === 200) && has('patients.list', r => r.user === null && r.status === 401));
+    check('操作ログ：プロキシが伝えた接続元（192.168.1.77）が記録されている', has('login.success', r => r.ip === '192.168.1.77'));
+    check('操作ログ：絞り込み（断られた操作・エラーだけ）', await (async () => {
+      const r = await (await admin('GET', '/api/audit?kind=denied&limit=5000')).json();
+      return r.rows.length > 0 && r.rows.every(x => x.status >= 400);
+    })());
+    check('操作ログ：書き込みの失敗なし', audit.writer && audit.writer.failedCount === 0);
+    const auditFiles = fs.existsSync(auditDir) ? fs.readdirSync(auditDir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)) : [];
+    const auditText = auditFiles.map(f => fs.readFileSync(path.join(auditDir, f), 'utf8')).join('');
+    check('操作ログ：ファイルにパスワードが書かれていない',
+      auditFiles.length > 0 && ![TEST_PASSWORD, login.password, WEAK_PASSWORD, 'chigau-pasuwa-do-0000', 'Test-pass-1'].some(p => auditText.includes(p)),
+      `${auditFiles.join(', ')}（${auditText.split('\n').length - 1} 行）`);
   } catch (e) {
     check('例外なく完了', false, e.message);
   } finally {
