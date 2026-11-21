@@ -9,6 +9,7 @@
 //   ただし起動時に保存先を使えない場合は、設定の誤りなので起動を止める。
 // ・パスワードは記録しない（本文の password などの項目は *** に置き換える）。
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const readline = require('readline');
 
@@ -16,6 +17,7 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const MAX_STRING = 200;      // 1つの文字列の上限（超えた分は切る）
 const MAX_DETAIL = 2000;     // detail 全体の上限（JSON にしたときのバイト数）
 const ANON_PER_MINUTE = 120; // 未ログインの要求について、1分間に1件ずつ記録する上限（超えた分は件数だけを残す）
+const USER_PER_MINUTE = 1200; // ログイン済みのユーザー1人について、1分間に1件ずつ記録する上限（超えた分は、操作の種類ごとの件数と患者IDをまとめて残す）
 let checkIntervalMs = 5000;    // 「ファイルがまだあるか」を確かめる間隔
 
 let dir = null;              // 保存先フォルダ（init() で決まる。それまでは何も書かない）
@@ -24,6 +26,7 @@ let fdName = '';             // そのファイル名
 let lastCheckedAt = 0;       // ファイルがまだそこにあるかを最後に確かめた時刻
 let syncTimer = null;
 let failedCount = 0;         // 起動してから書き込めなかった件数
+let unreportedFailures = 0;  // そのうち、まだ操作ログに「記録できなかった」と残していない件数
 let lastError = null;        // 直近の失敗 { at, message }
 let lastReportedAt = 0;
 
@@ -64,9 +67,22 @@ function openFor(d) {
     if (fs.existsSync(path.join(dir, name))) return;
   }
   closeFile();
-  fd = fs.openSync(path.join(dir, name), 'a');
+  const file = path.join(dir, name);
+  let needsNewline = false;
+  try {
+    const size = fs.statSync(file).size;
+    if (size > 0) {
+      const last = Buffer.alloc(1);
+      const rfd = fs.openSync(file, 'r');
+      try { fs.readSync(rfd, last, 0, 1, size - 1); } finally { fs.closeSync(rfd); }
+      needsNewline = last[0] !== 0x0a;
+    }
+  } catch (_) { /* まだ無いファイルは、これから作られる */ }
+  fd = fs.openSync(file, 'a');
   fdName = name;
   lastCheckedAt = now;
+  // 最後の行が途中で切れていたら（停電の瞬間など）、改行を足してから続きを書く（次の記録が、切れた行とつながって読めなくなるのを防ぐ）
+  if (needsNewline) fs.writeSync(fd, '\n');
 }
 
 // 書き込んだ内容を1秒以内にディスクへ確定させる（1行ごとに確定させると遅いので、まとめて行う）
@@ -81,6 +97,7 @@ function scheduleSync() {
 
 function noteFailure(err) {
   failedCount++;
+  unreportedFailures++;
   lastError = { at: localIso(new Date()), message: String(err && (err.code || err.message) || err) };
   if (Date.now() - lastReportedAt > 60000) {   // 同じエラーでログを埋めない（1分に1回まで）
     lastReportedAt = Date.now();
@@ -112,9 +129,14 @@ function init(dbPath) {
 function write(entry, d = new Date()) {
   if (!dir) return false;
   try {
-    const line = JSON.stringify({ t: localIso(d), ...entry }) + '\n';
+    let line = JSON.stringify({ t: localIso(d), ...entry }) + '\n';
     openFor(d);
+    if (unreportedFailures) {
+      // 書けない状態から戻った最初の1行の前に、「この間の記録が残っていない」ことを書いておく
+      line = JSON.stringify({ t: localIso(d), user: null, action: 'audit.gap', detail: { count: unreportedFailures, note: '保存先に書き込めず、記録できなかった件数', last_error: lastError && lastError.message } }) + '\n' + line;
+    }
     fs.writeSync(fd, line);
+    unreportedFailures = 0;
     scheduleSync();
     return true;
   } catch (err) {
@@ -127,9 +149,14 @@ function write(entry, d = new Date()) {
 // ---------------------------------------------------------------- 記録する内容の組み立て
 
 // 接続元のIPアドレス（IPv4 が IPv6 の書き方 ::ffff:192.168.1.5 で届くことがあるので、そろえる）
+// TRUST_PROXY の設定によっては、req.ip に利用者が送ったヘッダー（X-Forwarded-For）の文字列がそのまま入ることがある。
+// IPアドレスの形をしていないものは採用せず、実際につながっている相手のアドレスを使う。
 function clientIp(req) {
-  const ip = String(req.ip || req.socket?.remoteAddress || '');
-  return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  const strip = v => (typeof v === 'string' && v.startsWith('::ffff:') ? v.slice(7) : v);
+  const viaProxy = strip(req.ip);
+  if (typeof viaProxy === 'string' && net.isIP(viaProxy)) return viaProxy;
+  const direct = strip(req.socket && req.socket.remoteAddress);
+  return typeof direct === 'string' && net.isIP(direct) ? direct : '';
 }
 
 function cut(str, max = MAX_STRING) {
@@ -188,6 +215,37 @@ function flushAnonSkipped() {
   anonSkipped = 0;
   write({ user: null, action: 'audit.skipped', detail: { count, note: '未ログインの要求が多すぎたため、1件ずつの記録を省略した件数' } });
 }
+// ログイン済みのユーザーについても、1分間に USER_PER_MINUTE 件を超えた分は1件ずつは書かず、
+// 「操作の種類ごとの件数」と「対象になった患者ID」をまとめて1行（audit.skipped）にする。
+// 患者IDは必ず残すので、要求を連打して「どの患者を見たか」を隠すことはできない。
+const userWindows = new Map();   // uid → { start, used, skipped, actions: {種類: 件数}, patients: Set, name }
+function flushUser(uid) {
+  const w = userWindows.get(uid);
+  if (!w || !w.skipped) return;
+  const patients = [...w.patients];
+  write({
+    user: w.name, uid, action: 'audit.skipped',
+    detail: { count: w.skipped, actions: w.actions, patient_ids: patients.slice(0, 500), patient_ids_more: Math.max(0, patients.length - 500) || undefined,
+      note: '同じユーザーの操作が1分間に多すぎたため、1件ずつの記録を省略した分（操作の種類ごとの件数と、対象の患者ID）' },
+  });
+  w.skipped = 0; w.actions = {}; w.patients = new Set();
+}
+function allowUser(actor, action, patientId, now = Date.now()) {
+  let w = userWindows.get(actor.id);
+  if (!w || now - w.start >= 60000) {
+    flushUser(actor.id);
+    w = { start: now, used: 0, skipped: 0, actions: {}, patients: new Set(), name: actor.username, timer: null };
+    userWindows.set(actor.id, w);
+    if (userWindows.size > 1000) for (const [id, x] of userWindows) if (now - x.start >= 120000 && !x.skipped) userWindows.delete(id);
+  }
+  if (w.used < USER_PER_MINUTE) { w.used++; return true; }
+  w.skipped++;
+  w.actions[action] = (w.actions[action] || 0) + 1;
+  if (patientId !== undefined && patientId !== null) w.patients.add(patientId);
+  if (!w.timer) { w.timer = setTimeout(() => { w.timer = null; flushUser(actor.id); }, 60000); w.timer.unref(); }
+  return false;
+}
+
 function allowAnonymous(now = Date.now()) {
   if (now - anonWindowStart >= 60000) {
     flushAnonSkipped();
@@ -211,12 +269,20 @@ function allowAnonymous(now = Date.now()) {
  */
 function record(req, action, fields = {}) {
   const actor = req.session?.user || fields.actor || null;
-  if (!actor && !allowAnonymous()) return false;
+  // fields.always: 件数の上限にかかわらず必ず残す記録（ロックの仕組みで回数が限られている、実在するユーザーへのログイン失敗など）
+  if (!fields.always) {
+    if (!actor) { if (!allowAnonymous()) return false; }
+    else if (!allowUser(actor, action, fields.patient_id !== undefined ? fields.patient_id : fields.patient_id_raw)) return false;
+  }
+  // fields.user（ログイン画面に入力されたユーザーIDなど）を記録するときは、uid とロールを付けない。
+  // 別の人がログイン済みのブラウザーから試した場合に、その人の uid・ロールが「入力されたID」のものに見えてしまうため
+  const named = fields.user !== undefined;
   const entry = {
-    user: fields.user !== undefined ? safeText(fields.user, 64) : (actor ? actor.username : null),
-    uid: actor ? actor.id : undefined,
-    role: actor ? actor.role : undefined,
-    ip: clientIp(req),
+    user: named ? (fields.user === null ? null : safeText(fields.user, 64)) : (actor ? actor.username : null),
+    uid: !named && actor ? actor.id : undefined,
+    role: !named && actor ? actor.role : undefined,
+    session_user: named && actor ? actor.username : undefined,
+    ip: typeof fields.ip === 'string' && fields.ip ? fields.ip : clientIp(req),
     action,
     method: req.method,
     path: cut(String(req.originalUrl || req.url || '').split('?')[0]),
@@ -268,7 +334,7 @@ function monthsBetween(from, to) {
  * @param {{ from: string, to: string, user?: string, kind?: string, q?: string, limit: number }} cond  from / to は 'YYYY-MM-DD'（両端を含む）
  * @returns {Promise<{ rows: object[], total: number, truncated: boolean }>} total = 条件に合った件数
  */
-async function read({ from, to, user, kind, q, limit }) {
+async function read({ from, to, user, kind, q, limit, patientIds }) {
   if (!dir) return { rows: [], total: 0, truncated: false };
   const needle = q ? String(q).toLowerCase() : '';
   const ring = new Array(limit);   // 条件に合ったもののうち、新しい limit 件だけを覚えておく
@@ -281,10 +347,17 @@ async function read({ from, to, user, kind, q, limit }) {
     for await (const line of lines) {
       const day = line.slice(6, 16);   // 行頭は必ず {"t":"YYYY-MM-DD…
       if (day < from || day > to) continue;
-      if (needle && !line.toLowerCase().includes(needle)) continue;
+      const textHit = !needle || line.toLowerCase().includes(needle);
+      if (!textHit && !(patientIds && patientIds.size)) continue;
       let row;
       try { row = JSON.parse(line); } catch (_) { continue; }   // 途中で切れた行（停電の瞬間など）は飛ばす
       if (!row || typeof row !== 'object') continue;
+      if (needle) {
+        // キーワードは、行の文字のほかに「患者の氏名」でも探す（行には患者IDしか入っていないため）。
+        // 操作ログを表示した記録そのもの（検索に使った言葉が入っている）は、キーワードでは拾わない
+        if (row.action === 'audit.view') continue;
+        if (!textHit && !(patientIds && patientIds.has(row.patient_id))) continue;
+      }
       if (user && row.user !== user) continue;
       if (kind && !kindsOf(row).includes(kind)) continue;
       ring[total % limit] = row;
@@ -306,9 +379,10 @@ function status() {
 module.exports = {
   init, write, record, recordSystem, read, status, clientIp, localIso, kindsOf,
   // 自己テスト（tools/selftest-security.js）用
-  safeText, ANON_PER_MINUTE,
+  safeText, ANON_PER_MINUTE, USER_PER_MINUTE,
   _test: {
     sanitize, setCheckInterval: ms => { checkIntervalMs = ms; }, close: closeFile, allowAnonymous, flushAnonSkipped,
     resetAnonymous: () => { anonWindowStart = 0; anonUsed = 0; anonSkipped = 0; if (anonTimer) { clearTimeout(anonTimer); anonTimer = null; } },
+    flushUser, resetUsers: () => { for (const w of userWindows.values()) if (w.timer) clearTimeout(w.timer); userWindows.clear(); },
   },
 };

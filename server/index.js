@@ -158,6 +158,18 @@ db.getDb().then(() => {
       node: process.version, port: String(PORT), host: HOST || '(すべて)',
       trust_proxy: trustProxy === undefined ? '(なし)' : String(trustProxy),
     });
+
+    // 請求書PDF用の Chrome があるかを確かめる。Puppeteer 25 では、npm ci のときに Chrome を取得できなくても
+    // npm ci 自体は成功したように見えるので、ここで気づけるようにする（無くても起動は続ける。PDF 以外は使える）。
+    (async () => {
+      const chrome = process.env.PUPPETEER_EXECUTABLE_PATH || await require('puppeteer').executablePath();
+      if (!require('fs').existsSync(chrome)) {
+        console.error(`請求書PDF用の Chrome が見つかりません: ${chrome}\n` +
+          'このままでは請求書PDFを出力できません。プロジェクトのフォルダで「npx.cmd puppeteer browsers install chrome」を実行してください' +
+          '（インターネットに出られる必要があります）。');
+        audit.recordSystem('server.warning', { message: '請求書PDF用の Chrome が見つからない', path: chrome });
+      }
+    })().catch(err => console.error('Chrome の確認に失敗しました:', err.message));
   });
 }).catch(err => {
   console.error('DB初期化エラー:', err);

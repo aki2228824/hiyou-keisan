@@ -75,9 +75,10 @@ function Get-PrefixHash([string]$path, [long]$length) {
 function Copy-OperationLog([string]$srcDir, [string]$dstDir, [bool]$explicit, [string]$stamp) {
   # Operation log = audit-YYYY-MM.jsonl, one file per month, written by the app next to the database.
   # These are append-only text files, so a healthy file only ever GROWS and always still starts with
-  # the content that was backed up before. Anything else means somebody cut or edited the log:
-  #   - smaller than its backup copy          -> not copied, the bigger backup copy is kept, WARNING
-  #   - no longer starts with the backup copy -> the old backup copy is kept as <name>.before-<stamp>, WARNING
+  # the content that was backed up before. Anything else (smaller than its backup copy, or no longer
+  # starting with it) means somebody cut or edited the log. In that case the old backup copy is kept under
+  # the name <name>.before-<stamp>, the current file is copied, and the run ends with a WARNING (exit code 2)
+  # - once, on the night it is noticed; the kept copy stays as evidence.
   # Nothing is ever deleted here. Returns 0 = OK, 1 = ERROR, 2 = WARNING.
   if (-not (Test-Path -LiteralPath $srcDir)) {
     if ($explicit) {
@@ -100,15 +101,13 @@ function Copy-OperationLog([string]$srcDir, [string]$dstDir, [bool]$explicit, [s
       if (Test-Path -LiteralPath $target) {
         $dstLen = (Get-Item -LiteralPath $target).Length
         if ($srcLen -eq $dstLen) { continue }
-        if ($srcLen -lt $dstLen) {
-          Write-Log "WARNING operation log $($f.Name) is smaller ($srcLen bytes) than its backup copy ($dstLen bytes). The backup copy is kept. CHECK WHO CHANGED THE LOG."
-          if ($result -eq 0) { $result = 2 }
-          continue
-        }
-        if ((Get-PrefixHash $f.FullName $dstLen) -ne (Get-SharedHash $target)) {
+        $changed = ''
+        if ($srcLen -lt $dstLen) { $changed = "is smaller ($srcLen bytes) than its backup copy ($dstLen bytes)" }
+        elseif ((Get-PrefixHash $f.FullName $dstLen) -ne (Get-SharedHash $target)) { $changed = 'no longer starts with the content of its backup copy (lines were changed or removed)' }
+        if ($changed) {
           $aside = "$($f.Name).before-$stamp"
           Rename-Item -LiteralPath $target -NewName $aside
-          Write-Log "WARNING operation log $($f.Name) no longer starts with the content of its backup copy (lines were changed or removed). The old backup copy is kept as $aside. CHECK WHO CHANGED THE LOG."
+          Write-Log "WARNING operation log $($f.Name) $changed. The old backup copy is kept as $aside. CHECK WHO CHANGED THE LOG."
           if ($result -eq 0) { $result = 2 }
         }
       }

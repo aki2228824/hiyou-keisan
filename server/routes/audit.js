@@ -51,10 +51,17 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
     const limitRaw = Number(limitText);
     const limit = Math.min(limitRaw, MAX_LIMIT);
 
-    const result = await audit.read({ from, to, user: req.query.user || '', kind, q: req.query.q || '', limit });
-
     // 患者IDには、いまの氏名を付けて返す（ログには氏名を重ねて持たせない。削除済みの患者は氏名なし）
     const names = new Map(db.query('SELECT id, name FROM patients').map(p => [p.id, p.name]));
+
+    // キーワードは患者の氏名でも探せるようにする（ログの行には患者IDしか入っていないので、氏名に合う患者のIDを先に調べる）
+    const q = req.query.q || '';
+    const needle = q.toLowerCase();
+    const patientIds = new Set();
+    if (needle) for (const [id, name] of names) if (String(name).toLowerCase().includes(needle)) patientIds.add(id);
+
+    const result = await audit.read({ from, to, user: req.query.user || '', kind, q, limit, patientIds });
+
     for (const row of result.rows) {
       if (row.patient_id != null && names.has(row.patient_id)) row.patient_name = names.get(row.patient_id);
     }

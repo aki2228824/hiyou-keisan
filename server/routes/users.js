@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const db = require('../database');
 const lockout = require('../services/loginLockout');
 const passwordPolicy = require('../services/passwordPolicy');
-const { requireRole } = require('../middleware/auth');
+const { requireRole, passwordMark } = require('../middleware/auth');
 
 const ROLES = ['admin', 'staff', 'viewer'];
 const MAX_USERNAME = 64;   // ログイン側（routes/auth.js）も、これより長いIDは受け付けない
@@ -91,8 +91,14 @@ router.put('/:id', requireRole('admin'), (req, res) => {
     if (hash) db.run('UPDATE users SET password_hash=? WHERE id=?', [hash, target.id]);
   });
 
-  // パスワードを決め直したら、ログイン失敗によるロックも解除する
-  if (hash) { lockout.unlock(target.username); lockout.unlock(name); }
+  if (hash) {
+    // パスワードを決め直したら、ログイン失敗によるロックも解除する
+    lockout.unlock(target.username);
+    lockout.unlock(name);
+    // そのユーザーの、古いパスワードでログインした画面は次の操作から使えなくなる（middleware/auth.js）。
+    // 管理者が自分自身のパスワードを変えた場合だけは、いま操作しているこの画面を引き続き使えるようにする
+    if (target.id === req.session.user.id) req.session.user.pw = passwordMark(hash);
+  }
   res.json({ ok: true });
 });
 

@@ -853,8 +853,9 @@ async function saveUser(id) {
     renderMasterUsers().catch(() => {}); // 保存できなかった入力を元の値に戻す
     throw e;
   }
-  document.getElementById(`u-pass-${id}`).value = '';
   showToast(`「${username}」の情報を更新しました`);
+  // 一覧を読み直す（パスワードを設定し直すとロックも解除されるので、「ロック中」の表示を消すため）
+  renderMasterUsers();
 }
 
 async function deleteUser(id) {
@@ -888,7 +889,8 @@ async function unlockUser(id) {
 // サーバーが記録する出来事の種類（server/middleware/audit.js、server/routes/auth.js）と、画面での呼び名
 const AUDIT_ACTIONS = {
   'login.success': 'ログイン', 'login.failure': 'ログイン失敗', 'login.locked': 'ログイン拒否（ロック中）',
-  'audit.skipped': '記録の省略（未ログインの要求が多すぎたため、件数だけを記録）', 'logout': 'ログアウト',
+  'audit.skipped': '記録の省略（要求が多すぎたため、件数だけを記録）', 'audit.gap': '記録の欠落（保存先に書き込めなかった）',
+  'users.password_reset_offline': 'パスワードの再設定（サーバー上のツール）', 'logout': 'ログアウト',
   'records.view': '実績の表示', 'records.save': '実績の保存', 'summary.view': '月次集計の表示',
   'mealprices.view': '食事単価の表示', 'mealprices.list': '食事単価の一覧表示', 'mealprices.save': '食事単価の保存',
   'pdf.export': '請求書PDFの出力',
@@ -908,9 +910,11 @@ function auditTime(row) {
 }
 
 function auditUser(row) {
-  if (row.action === 'server.start') return '（サーバー）';
+  if (['server.start', 'audit.gap', 'users.password_reset_offline'].includes(row.action)) return '（サーバー）';
   if (row.user == null) return '（未ログイン）';
-  return row.role ? `${row.user}（${roleName(row.role)}）` : String(row.user);
+  const name = row.role ? `${row.user}（${roleName(row.role)}）` : String(row.user);
+  // ほかの人がログインしている画面から試したログインは、その画面の持ち主も出す
+  return row.session_user ? `${name}［${row.session_user} がログイン中の画面から］` : name;
 }
 
 function auditTarget(row) {
@@ -946,18 +950,20 @@ function auditDetail(row) {
   const parts = [];
   if (rest.year != null && rest.month != null) { parts.push(`${rest.year}年${Number(rest.month)}月分`); delete rest.year; delete rest.month; }
   if (rest.record_date != null) { parts.push(`${rest.record_date} の分`); delete rest.record_date; }
-  if (rest.weak_password) { parts.push('パスワードが基準を満たしていない'); delete rest.weak_password; }
+  if (rest.below_standard) { parts.push('パスワードが基準を満たしていない'); delete rest.below_standard; }
+  if (rest.unknown_id) { parts.push(`登録されていないユーザーID（${rest.length}文字）`); delete rest.unknown_id; delete rest.length; }
+  if (rest.inactive) { parts.push('無効になっているユーザーID'); delete rest.inactive; }
   if (rest.locked) { parts.push(`この失敗でロック（${rest.minutes}分間）`); delete rest.locked; delete rest.minutes; }
   if (Object.keys(rest).length) parts.push(JSON.stringify(rest));
   return parts.join(' ／ ');
 }
 
 function renderMasterAudit() {
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  // 期間は空のまま最初の表示を行い、サーバーが返した「サーバーの今日」を入れる
+  // （このPCの時計やタイムゾーンがサーバーと違っていても、今日の記録が表示されるように）
   document.getElementById('master-audit').innerHTML = `
     <div class="audit-toolbar">
-      <label>期間 <input type="date" id="audit-from" value="${today}"> 〜 <input type="date" id="audit-to" value="${today}"></label>
+      <label>期間 <input type="date" id="audit-from"> 〜 <input type="date" id="audit-to"></label>
       <label>ユーザーID <input type="text" id="audit-user" list="audit-user-list" placeholder="すべて" style="width:120px"></label>
       <datalist id="audit-user-list"></datalist>
       <label>種類 <select id="audit-kind">
@@ -967,7 +973,7 @@ function renderMasterAudit() {
         <option value="change">登録・変更・削除</option>
         <option value="denied">断られた操作・エラー</option>
       </select></label>
-      <label>キーワード <input type="text" id="audit-q" placeholder="IPアドレスなど" style="width:140px"></label>
+      <label>キーワード <input type="text" id="audit-q" placeholder="患者の氏名、IPアドレスなど" style="width:180px"></label>
       <button onclick="loadAuditLog()" class="btn-primary">表示</button>
       <button onclick="downloadAuditCsv()" class="btn-secondary">CSV保存</button>
     </div>
@@ -991,6 +997,11 @@ function auditQuery(limit) {
 
 async function loadAuditLog() {
   const data = await api('/audit?' + auditQuery(1000));
+  // 期間が空だった（最初の表示）ときは、サーバーが使った日付を入れておく
+  for (const [id, value] of [['audit-from', data.from], ['audit-to', data.to]]) {
+    const el = document.getElementById(id);
+    if (!el.value) el.value = value;
+  }
   auditCondition = auditQuery(5000);
 
   // ユーザーIDの入力候補（表示中の記録に出てくるID）
@@ -1019,7 +1030,7 @@ async function loadAuditLog() {
   document.getElementById('audit-table').innerHTML = data.rows.length ? `
     <div class="audit-wrap">
       <table class="master-table audit-table">
-        <thead><tr><th>日時</th><th>ユーザー</th><th>接続元</th><th>操作</th><th>対象</th><th>結果</th><th>内容</th></tr></thead>
+        <thead><tr><th>日時（サーバーの時刻）</th><th>ユーザー</th><th>接続元</th><th>操作</th><th>対象</th><th>結果</th><th>内容</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>` : '<p class="no-patient">この条件に合う記録はありません</p>';
@@ -1029,7 +1040,8 @@ async function loadAuditLog() {
 // （ログイン失敗の記録には、だれかが入力した文字列がそのまま入っているため）
 function csvCell(value) {
   let text = value == null ? '' : String(value);
-  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  // 全角の ＝ ＋ － ＠ で始まる値も数式として扱われるので、半角にそろえ、先頭の空白を除いた形で調べる
+  if (/^[=+\-@\t\r]/.test(text.normalize('NFKC').trimStart())) text = "'" + text;
   return '"' + text.replace(/"/g, '""') + '"';
 }
 

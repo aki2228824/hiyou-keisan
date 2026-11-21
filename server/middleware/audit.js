@@ -85,6 +85,9 @@ function auditMiddleware(req, res, next) {
   const startedAt = process.hrtime.bigint();
   // ログアウトやユーザーの無効化で、応答を返す時点ではセッションからユーザーが消えていることがあるので、先に控えておく
   const actorAtStart = req.session?.user ? { ...req.session.user } : null;
+  // 接続元も先に控える（途中で接続が切れた要求では、あとからは分からなくなる）
+  let ipAtStart = '';
+  try { ipAtStart = audit.clientIp(req); } catch (_) { /* 取れなければ空のまま */ }
 
   // 'close' は、応答を返し終えたときにも、途中で接続が切れたとき（PDFの作成中にタブを閉じた等）にも1回だけ起きる
   res.once('close', () => {
@@ -93,19 +96,21 @@ function auditMiddleware(req, res, next) {
       const query = req.query && typeof req.query === 'object' ? req.query : {};
       const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
       const isPatientRoute = kind.action.startsWith('patients.') && (kind.target !== undefined || kind.targetRaw !== undefined);
-      const patient = isPatientRoute
-        ? { id: kind.target, raw: kind.targetRaw }
-        : parseId(query.patient_id !== undefined ? query.patient_id : body ? body.patient_id : undefined);
+      // 患者IDは、ルートが実際に使う場所から取る（表示は検索条件、登録・変更は本文）。
+      // 検索条件と本文の両方に別々のIDを書いて、記録だけを別の患者に見せかける、ということをさせないため
+      const isRead = req.method === 'GET' || req.method === 'HEAD';
+      const patientSource = isRead ? query.patient_id : (body && body.patient_id !== undefined ? body.patient_id : query.patient_id);
+      const patient = isPatientRoute ? { id: kind.target, raw: kind.targetRaw } : parseId(patientSource);
 
       // 未ログインの要求は、内容（本文・検索条件）を記録しない。だれでも送れるので、大きな本文を送り付けてログを膨らませられるため
       let detail;
       if (actor) {
-        if (req.method === 'GET' || req.method === 'HEAD') {
+        if (isRead) {
           const { patient_id, ...rest } = query;   // patient_id は別の欄に出すので、detail からは外す
           detail = rest;
         } else if (body) {
           const { patient_id, ...rest } = body;
-          detail = Object.keys(query).length ? { ...rest, _query: query } : rest;
+          detail = Object.keys(query).length ? { ...rest, _query: query } : rest;   // 検索条件に書かれた値（patient_id を含む）はそのまま残す
         } else if (Object.keys(query).length) {
           detail = { _query: query };
         }
@@ -115,7 +120,9 @@ function auditMiddleware(req, res, next) {
 
       audit.record(req, kind.action, {
         actor: actorAtStart,
-        status: res.statusCode,
+        ip: ipAtStart,
+        // 応答を返す前に接続が切れた要求には、状態コードが無い（200 と記録すると、成功したように見えてしまう）
+        status: res.headersSent ? res.statusCode : undefined,
         ms: Number((process.hrtime.bigint() - startedAt) / 1000000n),
         patient_id: patient.id,
         patient_id_raw: patient.raw,

@@ -13,12 +13,28 @@ const MIN_LENGTH_FLOOR = 8;    // これより短い設定は受け付けない�
 const MIN_LENGTH_CEIL = 64;
 const MAX_BYTES = 72;          // bcrypt が見るのは先頭72バイトまで。それより長い部分は黙って無視されるので、登録させない
 
-// 推測されやすい文字列（小文字にして比較する）
+// 推測されやすい文字列（小文字にして比較する。数字や記号で置き換えた書き方 pa55w0rd なども、文字に戻して比べる）
 const WEAK_WORDS = [
-  'password', 'passw0rd', 'p@ssword', 'p@ssw0rd', 'pasuwado',
-  'qwerty', 'asdfgh', 'zxcvbn', 'admin', 'administrator', 'root', 'guest', 'login',
+  'password', 'pasuwado', 'admin', 'administrator', 'root', 'guest', 'login',
   'welcome', 'letmein', 'iloveyou', 'hiyou', 'keisan', 'byouin', 'hospital', 'ryouyou', 'kaigo',
+  // キーボードの並び
+  'qwert', 'asdfg', 'zxcvb', 'qazwsx', 'wsxedc', '1q2w3e', 'q1w2e3', 'zaq1', '1qaz', '2wsx', 'xsw2',
 ];
+
+// 数字・記号で置き換えた書き方を、元の文字に戻す（5→s、0→o、1→i、3→e、4→a、@→a、$→s、7→t）
+const LEET = { 5: 's', 0: 'o', 1: 'i', 3: 'e', 4: 'a', '@': 'a', $: 's', 7: 't' };
+const unleet = text => text.replace(/[501347@$]/g, c => LEET[c]);
+
+// 同じ並びの繰り返しでできているか（abc123abc123a、Abcd1234Abcd1 など）。
+// 「前から p 文字ずらしても同じ」になる p があり、繰り返されている部分が全体の3分の1以上なら、繰り返しとみなす
+function isRepeatedPattern(text) {
+  for (let p = 1; p <= Math.floor(text.length * 2 / 3); p++) {
+    let same = true;
+    for (let i = p; i < text.length && same; i++) same = text[i] === text[i - p];
+    if (same) return true;
+  }
+  return false;
+}
 
 function minLength() {
   const raw = process.env.PASSWORD_MIN_LENGTH;
@@ -72,10 +88,13 @@ function check(password, opts = {}) {
   const username = String(opts.username ?? '').trim().toLowerCase();
   if (username.length >= 3 && lower.includes(username))
     errors.push('ユーザーIDを含めないでください');
-  if (WEAK_WORDS.some(w => lower.includes(w)))
-    errors.push('推測されやすい文字列（password、qwerty、admin など）を含めないでください');
+  const plain = unleet(lower);
+  if (WEAK_WORDS.some(w => lower.includes(w) || plain.includes(w)))
+    errors.push('推測されやすい文字列（password、qwerty、admin など。pa55word のように数字や記号で置き換えたものも含む）を含めないでください');
   if (/(.)\1{3,}/.test(password) || hasSequentialRun(lower, 5))
     errors.push('同じ文字の4回以上の連続（aaaa）や、順番に並んだ文字（12345、abcde）を含めないでください');
+  if (isRepeatedPattern(lower))
+    errors.push('同じ並びの繰り返し（abc123abc123 など）は使えません');
   if (new Set(chars).size < 6)
     errors.push('使っている文字の種類が少なすぎます（6種類以上の文字を使ってください）');
 
