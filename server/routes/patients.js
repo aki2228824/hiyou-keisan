@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { requireRole } = require('../middleware/auth');
-const { toPositiveInt } = require('../services/prices');
+const { toPositiveInt, isPlainValue } = require('../services/prices');
 
 // 実在する病棟のIDなら数値で返す。存在しなければ null
 function findWardId(ward_id) {
@@ -12,6 +12,8 @@ function findWardId(ward_id) {
 
 router.get('/', (req, res) => {
   const { ward_id } = req.query;
+  if (!isPlainValue(ward_id))
+    return res.status(400).json({ error: '検索条件の指定が正しくありません' });
   let sql = `SELECT p.*, w.name as ward_name FROM patients p JOIN wards w ON p.ward_id=w.id`;
   const params = [];
   if (ward_id) { sql += ' WHERE p.ward_id=?'; params.push(ward_id); }

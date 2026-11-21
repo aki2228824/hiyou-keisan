@@ -18,20 +18,8 @@ const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
 const lockedMessage = seconds =>
   `このユーザーIDは、ログインに続けて失敗したため一時的にロックされています。約${Math.ceil(seconds / 60)}分後にもう一度お試しください。`;
 
-// ログイン失敗の記録が増えすぎないようにする（でたらめなログインを連打して操作ログを膨らませる攻撃への備え）。
-// 1分あたり FAILURE_LOG_PER_MINUTE 件までは1件ずつ記録し、超えた分は件数だけをまとめて1行にする。
-const FAILURE_LOG_PER_MINUTE = 120;
-let failureWindowStart = 0, failureLogged = 0, failureSkipped = 0;
-function recordLoginFailure(req, action, fields) {
-  const now = Date.now();
-  if (now - failureWindowStart >= 60000) {
-    if (failureSkipped) audit.recordSystem('login.failure.skipped', { count: failureSkipped, note: '失敗が多すぎたため、1件ずつの記録を省略した件数' });
-    failureWindowStart = now; failureLogged = 0; failureSkipped = 0;
-  }
-  if (failureLogged >= FAILURE_LOG_PER_MINUTE) { failureSkipped++; return; }
-  failureLogged++;
-  audit.record(req, action, fields);
-}
+// ログインの失敗は、未ログインの人が好きなだけ起こせる。audit.record() は、未ログインの要求の記録が1分間に
+// 一定の件数を超えると、超えた分を件数だけにまとめる（でたらめなログインの連打で操作ログを膨らませられないように）。
 
 router.get('/me', (req, res) => {
   // 無効化・削除されたユーザーは未ログイン扱い、ロール変更は最新を返す
@@ -46,7 +34,7 @@ router.post('/login', async (req, res, next) => {
     if (typeof username !== 'string' || typeof password !== 'string' || !username || !password)
       return res.status(400).json({ error: 'ユーザーIDとパスワードを入力してください' });
     if (username.length > MAX_USERNAME || password.length > MAX_PASSWORD) {
-      recordLoginFailure(req, 'login.failure', { user: username, status: 400, detail: { reason: '入力が長すぎる' } });
+      audit.record(req, 'login.failure', { user: username, status: 400, detail: { reason: '入力が長すぎる' } });
       return res.status(400).json({ error: 'ユーザーIDまたはパスワードが長すぎます' });
     }
 
@@ -55,7 +43,7 @@ router.post('/login', async (req, res, next) => {
     // 照合の前に「1回試した」と数える（ロック中、または同時に送られた要求が上限を超えた分は、照合せずに断る）
     const gate = lockout.begin(username, !!user);
     if (!gate.allowed) {
-      recordLoginFailure(req, 'login.locked', { user: username, status: 429 });
+      audit.record(req, 'login.locked', { user: username, status: 429 });
       return res.status(429).json({ error: lockedMessage(gate.seconds) });
     }
 
@@ -63,7 +51,7 @@ router.post('/login', async (req, res, next) => {
     const matched = await bcrypt.compare(password, user ? user.password_hash : DUMMY_HASH);
     if (!user || !matched) {
       const state = lockout.fail(username);
-      recordLoginFailure(req, 'login.failure', {
+      audit.record(req, 'login.failure', {
         user: username,
         status: state.locked ? 429 : 401,
         detail: state.locked ? { locked: true, minutes: lockout.lockMinutes } : undefined,

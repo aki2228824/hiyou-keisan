@@ -44,9 +44,11 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
       if (v != null && (typeof v !== 'string' || v.length > 100))
         return res.status(400).json({ error: `${name} の指定が正しくありません` });
     }
-    const limitRaw = req.query.limit == null || req.query.limit === '' ? DEFAULT_LIMIT : Number(req.query.limit);
-    if (!Number.isInteger(limitRaw) || limitRaw < 1)
+    // 文字列以外（?limit[a]=1 のような指定）を Number() に渡すと例外になることがあるので、先に形を確かめる
+    const limitText = req.query.limit == null || req.query.limit === '' ? String(DEFAULT_LIMIT) : req.query.limit;
+    if (typeof limitText !== 'string' || !/^\d{1,6}$/.test(limitText) || Number(limitText) < 1)
       return res.status(400).json({ error: 'limit が正しくありません' });
+    const limitRaw = Number(limitText);
     const limit = Math.min(limitRaw, MAX_LIMIT);
 
     const result = await audit.read({ from, to, user: req.query.user || '', kind, q: req.query.q || '', limit });

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { getItemPriceMap, toPrice, toPositiveInt, parseYearMonth } = require('../services/prices');
+const { getItemPriceMap, toPrice, toPositiveInt, parseYearMonth, isPlainValue } = require('../services/prices');
 const { requireRole } = require('../middleware/auth');
 
 router.get('/', (req, res) => {
@@ -31,6 +31,8 @@ router.put('/:id', requireRole('admin'), (req, res) => {
 // 単価一覧取得（指定月になければ直近の設定を引き継ぐ）
 router.get('/prices', (req, res) => {
   const { year, month } = req.query;
+  if (![year, month].every(isPlainValue))
+    return res.status(400).json({ error: '検索条件の指定が正しくありません' });
   const priceMap = getItemPriceMap(year, month);
   const rows = db.query('SELECT id, name, sort_order, active FROM items ORDER BY sort_order, id')
     .map(r => ({ ...r, unit_price: priceMap[r.id] ?? 0 }));

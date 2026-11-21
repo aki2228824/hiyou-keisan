@@ -888,7 +888,7 @@ async function unlockUser(id) {
 // サーバーが記録する出来事の種類（server/middleware/audit.js、server/routes/auth.js）と、画面での呼び名
 const AUDIT_ACTIONS = {
   'login.success': 'ログイン', 'login.failure': 'ログイン失敗', 'login.locked': 'ログイン拒否（ロック中）',
-  'login.failure.skipped': 'ログイン失敗（多数のため個別の記録を省略）', 'logout': 'ログアウト',
+  'audit.skipped': '記録の省略（未ログインの要求が多すぎたため、件数だけを記録）', 'logout': 'ログアウト',
   'records.view': '実績の表示', 'records.save': '実績の保存', 'summary.view': '月次集計の表示',
   'mealprices.view': '食事単価の表示', 'mealprices.list': '食事単価の一覧表示', 'mealprices.save': '食事単価の保存',
   'pdf.export': '請求書PDFの出力',
@@ -918,7 +918,14 @@ function auditTarget(row) {
   if (row.patient_id != null)
     parts.push(row.patient_name ? `${row.patient_name}（患者ID ${row.patient_id}）` : `患者ID ${row.patient_id}`);
   if (row.target != null) parts.push(`ID ${row.target}`);
+  // ID が普通の数字の書き方で送られてこなかったとき（"1.0" や "0001" など）は、送られてきたままの値も出す
+  const raw = auditRawIds(row);
+  if (raw) parts.push(`［送られてきた値: ${raw}］`);
   return parts.join(' ');
+}
+
+function auditRawIds(row) {
+  return [row.patient_id_raw, row.target_raw].filter(v => v != null && v !== '').join(' / ');
 }
 
 function auditResult(row) {
@@ -1029,11 +1036,11 @@ function csvCell(value) {
 // 表示中の条件に合う記録を CSV で保存する（最大 5,000 件。Excel で開ける形式）
 async function downloadAuditCsv() {
   const data = await api('/audit?' + (auditCondition || auditQuery(5000)));
-  const header = ['日時', 'ユーザーID', 'ロール', '接続元', '操作', '対象の患者', '患者ID', '対象ID', '結果', '内容', '操作の種類', '状態コード'];
+  const header = ['日時', 'ユーザーID', 'ロール', '接続元', '操作', '対象の患者', '患者ID', '対象ID', '結果', '内容', '操作の種類', '状態コード', '送られてきたID'];
   const lines = data.rows.map(row => [
     auditTime(row), row.user ?? '', row.role ? roleName(row.role) : '', row.ip ?? '',
     AUDIT_ACTIONS[row.action] ?? row.action, row.patient_name ?? '', row.patient_id ?? '', row.target ?? '',
-    auditResult(row), auditDetail(row), row.action ?? '', row.status ?? '',
+    auditResult(row), auditDetail(row), row.action ?? '', row.status ?? '', auditRawIds(row),
   ].map(csvCell).join(','));
   const csv = '﻿' + [header.map(csvCell).join(','), ...lines].join('\r\n') + '\r\n';
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));

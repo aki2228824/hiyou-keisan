@@ -268,6 +268,41 @@ function client(headers = {}) {
     // ログアウト
     check('ログアウトは 200、その後は 401', (await viaProxy('POST', '/api/auth/logout')).status === 200 && (await viaProxy('GET', '/api/patients')).status === 401);
 
+    // 細工した値を送られても、サーバーが止まらない（操作ログの記録は応答を返したあとに動くので、そこで例外が出ると全体が止まる）
+    const odd = [];
+    odd.push((await anon('POST', '/api/records?patient_id[toString]=1')).status);
+    odd.push((await anon('GET', '/api/patients?patient_id[toString]=x')).status);
+    odd.push((await anon('POST', '/api/records', { patient_id: { toString: 1 }, record_date: '2026-11-01', items: [] })).status);
+    odd.push((await staff('POST', '/api/records', { patient_id: { toString: 1 }, record_date: '2026-11-01', items: [] })).status);
+    odd.push((await admin('GET', '/api/records?patient_id[toString]=1&year=2026&month=8')).status);
+    odd.push((await admin('GET', '/api/meal-prices?patient_id[toString]=1&year[a]=2026&month=8')).status);
+    odd.push((await admin('GET', '/api/pdf?patient_id[toString]=1&year=2026&month=8')).status);
+    odd.push((await admin('GET', '/api/meal-prices/bulk?year[a]=2026&month=8')).status);
+    odd.push((await admin('GET', '/api/items/prices?year[a]=2026&month=8')).status);
+    odd.push((await admin('GET', '/api/patients?ward_id[a]=1')).status);
+    odd.push((await admin('GET', '/api/audit?limit[a]=1')).status);
+    odd.push((await admin('PUT', '/api/users/%E0%A4%A', { username: 'x', role: 'viewer' })).status);
+    await sleep(300);
+    check('細工した値（patient_id[toString]=1 など）を送られてもサーバーが止まらず、500 にもならない',
+      !exited && (await admin('GET', '/api/wards')).status === 200 && odd.every(s => s >= 400 && s < 500), odd.join(','));
+
+    // IDを変則的な書き方（0 を並べる、小数点を付ける）にしても、どの患者・どのユーザーかが操作ログに残る
+    const pidText = String(patients[0].id);
+    const paddedId = '0'.repeat(16 - pidText.length) + pidText;
+    const oddIds = [
+      (await viewer('GET', `/api/records?patient_id=${paddedId}&year=2026&month=8`)).status,
+      (await viewer('GET', `/api/meal-prices?patient_id=${pidText}.0&year=2026&month=8`)).status,
+      (await admin('PUT', `/api/users/${viewerRow.id}.0`, { username: 'smoke_viewer', role: 'viewer', active: 1 })).status,
+    ];
+
+    // 書式の壊れたログインの要求を送っても、サーバーのエラーログにパスワードが出ない
+    const broken = await fetch(BASE + '/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: '{"username":"smoke_staff","password":"Morenai-pasuwa-do-77',
+    });
+    await sleep(200);
+    check('書式の壊れた要求（400）を送っても、サーバーのログにパスワードが出ない', broken.status === 400 && !log.includes('Morenai-pasuwa-do-77'));
+
     // 操作ログ
     const auditRes = await admin('GET', '/api/audit?limit=5000');
     const audit = auditRes.status === 200 ? await auditRes.json() : { rows: [] };
@@ -285,6 +320,11 @@ function client(headers = {}) {
       has('users.create', r => r.status === 200) && has('users.create', r => r.status === 400) &&
       has('users.unlock', r => r.status === 200) && has('patients.list', r => r.user === null && r.status === 401));
     check('操作ログ：プロキシが伝えた接続元（192.168.1.77）が記録されている', has('login.success', r => r.ip === '192.168.1.77'));
+    check('操作ログ：IDを変則的な書き方にしても、患者・対象が記録される（送られてきた値も残る）',
+      oddIds.every(s => s === 200) &&
+      has('records.view', r => r.patient_id === patients[0].id && r.patient_id_raw === paddedId) &&
+      has('mealprices.view', r => r.patient_id === patients[0].id && r.patient_id_raw === pidText + '.0') &&
+      has('users.update', r => r.target === viewerRow.id && r.target_raw === viewerRow.id + '.0'), oddIds.join(','));
     check('操作ログ：絞り込み（断られた操作・エラーだけ）', await (async () => {
       const r = await (await admin('GET', '/api/audit?kind=denied&limit=5000')).json();
       return r.rows.length > 0 && r.rows.every(x => x.status >= 400);
@@ -293,8 +333,19 @@ function client(headers = {}) {
     const auditFiles = fs.existsSync(auditDir) ? fs.readdirSync(auditDir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)) : [];
     const auditText = auditFiles.map(f => fs.readFileSync(path.join(auditDir, f), 'utf8')).join('');
     check('操作ログ：ファイルにパスワードが書かれていない',
-      auditFiles.length > 0 && ![TEST_PASSWORD, login.password, WEAK_PASSWORD, 'chigau-pasuwa-do-0000', 'Test-pass-1'].some(p => auditText.includes(p)),
+      auditFiles.length > 0 && ![TEST_PASSWORD, login.password, WEAK_PASSWORD, 'chigau-pasuwa-do-0000', 'Test-pass-1', 'Morenai-pasuwa-do-77'].some(p => auditText.includes(p)),
       `${auditFiles.join(', ')}（${auditText.split('\n').length - 1} 行）`);
+
+    // 未ログインの要求を大量に送られても、1件ずつ記録するのは1分あたり一定の件数までで、本文は記録しない
+    // （だれでも送れる要求でディスクを埋められないように）。この確認は記録の枠を使い切るので、最後に行う。
+    const floodBody = { marker: 'FLOOD-MARKER-' + 'x'.repeat(2000) };
+    const flood = await Promise.all(Array.from({ length: 400 }, () => anon('POST', '/api/smoke-flood', floodBody).then(r => r.status)));
+    await sleep(1300);   // 書き込みがファイルに確定するのを待つ
+    const afterFlood = auditFiles.map(f => fs.readFileSync(path.join(auditDir, f), 'utf8')).join('');
+    const floodLines = afterFlood.split('\n').filter(l => l.includes('/api/smoke-flood')).length;
+    check('未ログインの要求を 400 件送っても、記録は1分あたりの上限（120 件）までで、本文は記録されない',
+      flood.every(s => s === 404) && floodLines <= 120 && !afterFlood.includes('FLOOD-MARKER') && (await admin('GET', '/api/wards')).status === 200,
+      `記録 ${floodLines} 行 / 送信 ${flood.length} 件`);
   } catch (e) {
     check('例外なく完了', false, e.message);
   } finally {

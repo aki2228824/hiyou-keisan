@@ -18,7 +18,7 @@ process.env.AUDIT_LOG_DIR = path.join(workDir, 'audit');
 const policy = require('../server/services/passwordPolicy');
 const { createLockout } = require('../server/services/loginLockout');
 const audit = require('../server/services/auditLog');
-const { classify } = require('../server/middleware/audit');
+const { classify, parseId } = require('../server/middleware/audit');
 
 let passed = 0, failed = 0;
 function check(name, cond, detail) {
@@ -172,6 +172,55 @@ function check(name, cond, detail) {
     kind('GET', '/api/wards') === null && kind('GET', '/api/items') === null && kind('GET', '/api/items/prices') === null &&
     kind('GET', '/css/style.css') === null && kind('GET', '/') === null && kind('POST', '/api/auth/login') === null && kind('GET', '/api/auth/me') === null);
   check('39. 一覧に無い API でも、GET 以外は「その他」として記録する', kind('DELETE', '/api/unknown') === 'other' && kind('POST', '/api/items/abc') === 'other');
+
+  // ---------------------------------------------------------------- 細工した値・変則的な書き方のID・未ログインの連打
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  check('40. IDは、ルート側が受け付ける変則的な書き方（"1.0"・" 1"・"0001"・"1e0"）でも同じ数値にそろえ、送られてきた値も残す',
+    same(parseId('12'), { id: 12 }) && same(parseId(12), { id: 12 }) && same(parseId('12.0'), { id: 12, raw: '12.0' }) &&
+    same(parseId(' 12'), { id: 12, raw: ' 12' }) && same(parseId('0000000000000012'), { id: 12, raw: '0000000000000012' }) && same(parseId('1e0'), { id: 1, raw: '1e0' }));
+  check('41. 数値として読めないID（文字・負数・配列・オブジェクト）は、送られてきた値だけを残す。未指定は何も残さない',
+    same(parseId('abc'), { raw: 'abc' }) && same(parseId('-3'), { raw: '-3' }) && same(parseId(['1', '2']), { raw: ['1', '2'] }) &&
+    same(parseId({ toString: 1 }), { raw: { toString: 1 } }) && same(parseId(undefined), {}) && same(parseId(''), {}) && same(parseId(null), {}));
+  check('42. /api/users/12.0 のような書き方でも、同じ操作として分類され、対象のIDが分かる',
+    same(classify('PUT', '/api/users/12.0'), { action: 'users.update', target: 12, targetRaw: '12.0' }) &&
+    same(classify('DELETE', '/api/patients/%31'), { action: 'patients.delete', target: 1 }) &&
+    same(classify('PUT', '/api/items/abc'), { action: 'items.update', targetRaw: 'abc' }) &&
+    same(classify('POST', '/api/users/+7/unlock'), { action: 'users.unlock', target: 7, targetRaw: '+7' }) &&
+    classify('PUT', '/api/users/%E0%A4%A').action === 'users.update');
+  check('43. どんな値でも例外を出さずに文字列にできる（String() は { toString: 1 } で例外になる）',
+    audit.safeText({ toString: 1 }) === '{"toString":1}' && audit.safeText(['a']) === '["a"]' && audit.safeText(null) === '' &&
+    audit.safeText('あ'.repeat(300)).length === 201 && audit.safeText(12) === '12' && (() => { const o = {}; o.self = o; return audit.safeText(o) === '（文字にできない値）'; })());
+
+  // 記録そのものも、細工した値で例外にならない
+  audit._test.resetAnonymous();
+  const auditDir2 = audit.init(path.join(workDir, 'second', 'hiyou.db'));   // 上で壊した保存先とは別の場所で続ける
+  const file2 = path.join(auditDir2, `audit-${today.slice(0, 7)}.jsonl`);
+  const okRecord = audit.record(req(), 'records.view', { status: 200, patient_id: undefined, patient_id_raw: { toString: 1 }, target_raw: ['x'], user: { toString: 2 }, detail: { a: { toString: 3 } } });
+  const odd = JSON.parse(fs.readFileSync(file2, 'utf8').trim().split('\n').pop());
+  check('44. 細工した値を含む記録も、例外にならずに1行として残る', okRecord === true && odd.patient_id_raw === '{"toString":1}' && odd.target_raw === '["x"]' && odd.user === '{"toString":2}');
+
+  audit.record(req(), 'other', { status: 400, detail: { memo: 'あ'.repeat(190), list: Array.from({ length: 50 }, (_, i) => 'い'.repeat(190) + i) } });
+  const jpLine = fs.readFileSync(file2, 'utf8').trim().split('\n').pop();
+  check('45. 日本語の大きな内容も、バイト数で打ち切られる（1行が数KBにならない）', Buffer.byteLength(jpLine, 'utf8') < 2600 && JSON.parse(jpLine).detail['省略'] === true, `${Buffer.byteLength(jpLine, 'utf8')} バイト`);
+
+  // 未ログインの要求: 1分あたり一定の件数までしか1件ずつ記録しない
+  audit._test.resetAnonymous();
+  const anonReq = req({ session: null });
+  let written = 0;
+  for (let i = 0; i < audit.ANON_PER_MINUTE + 80; i++) if (audit.record(anonReq, 'login.failure', { user: 'x' + i, status: 401 })) written++;
+  const loggedIn = audit.record(req(), 'records.view', { status: 200, patient_id: 1 });
+  check(`46. 未ログインの要求の記録は1分あたり ${audit.ANON_PER_MINUTE} 件まで。ログイン済みのユーザーの記録は、その間も省略されない`, written === audit.ANON_PER_MINUTE && loggedIn === true, `${written} 件を記録`);
+  audit._test.flushAnonSkipped();
+  const skipped = JSON.parse(fs.readFileSync(file2, 'utf8').trim().split('\n').pop());
+  check('47. 省略した件数は、まとめて1行で残る', skipped.action === 'audit.skipped' && skipped.detail.count === 80, JSON.stringify(skipped.detail));
+  const t0 = Date.now();
+  audit._test.resetAnonymous();
+  const windows = [audit._test.allowAnonymous(t0), ...Array.from({ length: audit.ANON_PER_MINUTE }, () => audit._test.allowAnonymous(t0 + 1000))];
+  check('48. 1分たつと、未ログインの要求の記録を再開する', windows.slice(0, audit.ANON_PER_MINUTE).every(Boolean) && windows[audit.ANON_PER_MINUTE] === false && audit._test.allowAnonymous(t0 + 60000) === true);
+  audit._test.resetAnonymous();
+  check('49. 絞り込みの分類: 一覧に無い操作（その他）は「登録・変更・削除」に、記録の省略は「断られた操作・エラー」に入る',
+    audit.kindsOf({ action: 'other', status: 404 }).join() === 'change,denied' && audit.kindsOf({ action: 'audit.skipped' }).join() === 'denied');
+  audit._test.close();
 
   try { fs.rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (_) { console.log(`テスト用フォルダを消せませんでした: ${workDir}`); }
   console.log(`\n結果: 合格 ${passed} / 不合格 ${failed}${failed ? '' : '（全項目合格）'}`);

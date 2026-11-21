@@ -14,7 +14,8 @@ const readline = require('readline');
 
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const MAX_STRING = 200;      // 1つの文字列の上限（超えた分は切る）
-const MAX_DETAIL = 2000;     // detail 全体の上限（JSON にしたときの文字数）
+const MAX_DETAIL = 2000;     // detail 全体の上限（JSON にしたときのバイト数）
+const ANON_PER_MINUTE = 120; // 未ログインの要求について、1分間に1件ずつ記録する上限（超えた分は件数だけを残す）
 let checkIntervalMs = 5000;    // 「ファイルがまだあるか」を確かめる間隔
 
 let dir = null;              // 保存先フォルダ（init() で決まる。それまでは何も書かない）
@@ -162,7 +163,41 @@ function limitDetail(detail) {
   const clean = sanitize(detail);
   if (clean && typeof clean === 'object' && !Object.keys(clean).length) return undefined;
   const json = JSON.stringify(clean);
-  return json.length <= MAX_DETAIL ? clean : { 省略: true, 先頭: json.slice(0, MAX_DETAIL) };
+  if (Buffer.byteLength(json, 'utf8') <= MAX_DETAIL) return clean;
+  // 文字数ではなくバイト数で切る（日本語は1文字3バイトなので、文字数で切ると1行が数KBになる）
+  const head = Buffer.from(json, 'utf8').subarray(0, MAX_DETAIL).toString('utf8').replace(/\uFFFD+$/, '');
+  return { 省略: true, 先頭: head };
+}
+
+// どんな値でも例外を出さずに、記録用の短い文字列にする
+// （{ toString: 1 } のような値を String() に渡すと例外になり、記録の処理ごと止まってしまうため）
+function safeText(value, max = MAX_STRING) {
+  if (value == null) return '';
+  if (typeof value === 'string') return cut(value, max);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try { return cut(JSON.stringify(value) ?? '', max); } catch (_) { return '（文字にできない値）'; }
+}
+
+// 未ログインの要求は、だれでも好きなだけ送れる。1件ずつ記録するのは1分間に ANON_PER_MINUTE 件までにして、
+// 超えた分は件数だけを数え、あとでまとめて1行（audit.skipped）にする（でたらめな要求の連打でディスクを埋められないように）。
+let anonWindowStart = 0, anonUsed = 0, anonSkipped = 0, anonTimer = null;
+function flushAnonSkipped() {
+  if (anonTimer) { clearTimeout(anonTimer); anonTimer = null; }
+  if (!anonSkipped) return;
+  const count = anonSkipped;
+  anonSkipped = 0;
+  write({ user: null, action: 'audit.skipped', detail: { count, note: '未ログインの要求が多すぎたため、1件ずつの記録を省略した件数' } });
+}
+function allowAnonymous(now = Date.now()) {
+  if (now - anonWindowStart >= 60000) {
+    flushAnonSkipped();
+    anonWindowStart = now;
+    anonUsed = 0;
+  }
+  if (anonUsed < ANON_PER_MINUTE) { anonUsed++; return true; }
+  anonSkipped++;
+  if (!anonTimer) { anonTimer = setTimeout(flushAnonSkipped, 60000); anonTimer.unref(); }   // 続きの要求が来なくても、件数は必ず残す
+  return false;
 }
 
 /**
@@ -171,11 +206,14 @@ function limitDetail(detail) {
  * @param {string} action   出来事の種類（login.success、records.save など）
  * @param {object} [fields] status / ms / patient_id / target / detail / user（ログイン失敗時の「入力されたユーザーID」など、
  *                          セッションのユーザーと違う名前を記録したいとき）/ actor（{id, username, role}。セッションが無いとき用）
+ *                          / patient_id_raw・target_raw（IDが普通の数字の書き方でなかったときの、送られてきたままの値）
+ * @returns {boolean} 書き込んだら true（未ログインの要求が多すぎて省略したとき、書き込みに失敗したときは false）
  */
 function record(req, action, fields = {}) {
   const actor = req.session?.user || fields.actor || null;
+  if (!actor && !allowAnonymous()) return false;
   const entry = {
-    user: fields.user !== undefined ? cut(String(fields.user), 64) : (actor ? actor.username : null),
+    user: fields.user !== undefined ? safeText(fields.user, 64) : (actor ? actor.username : null),
     uid: actor ? actor.id : undefined,
     role: actor ? actor.role : undefined,
     ip: clientIp(req),
@@ -185,7 +223,9 @@ function record(req, action, fields = {}) {
     status: fields.status,
     ms: fields.ms,
     patient_id: fields.patient_id,
+    patient_id_raw: fields.patient_id_raw === undefined ? undefined : safeText(fields.patient_id_raw, 100),
     target: fields.target,
+    target_raw: fields.target_raw === undefined ? undefined : safeText(fields.target_raw, 100),
     detail: limitDetail(fields.detail),
   };
   if (fields.aborted) entry.aborted = true;
@@ -205,8 +245,8 @@ function kindsOf(row) {
   const kinds = [];
   if (action.startsWith('login.') || action === 'logout' || action === 'users.unlock') kinds.push('auth');
   if (/\.(view|list)$/.test(action) || action === 'pdf.export') kinds.push('view');
-  if (/\.(create|update|delete|save|unlock|run)$/.test(action)) kinds.push('change');
-  if (Number(row.status) >= 400) kinds.push('denied');
+  if (/\.(create|update|delete|save|unlock|run)$/.test(action) || action === 'other') kinds.push('change');
+  if (Number(row.status) >= 400 || action === 'audit.skipped') kinds.push('denied');
   return kinds;
 }
 
@@ -266,5 +306,9 @@ function status() {
 module.exports = {
   init, write, record, recordSystem, read, status, clientIp, localIso, kindsOf,
   // 自己テスト（tools/selftest-security.js）用
-  _test: { sanitize, setCheckInterval: ms => { checkIntervalMs = ms; }, close: closeFile },
+  safeText, ANON_PER_MINUTE,
+  _test: {
+    sanitize, setCheckInterval: ms => { checkIntervalMs = ms; }, close: closeFile, allowAnonymous, flushAnonSkipped,
+    resetAnonymous: () => { anonWindowStart = 0; anonUsed = 0; anonSkipped = 0; if (anonTimer) { clearTimeout(anonTimer); anonTimer = null; } },
+  },
 };

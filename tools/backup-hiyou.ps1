@@ -5,7 +5,7 @@
 #            1 = ERROR   (no verified backup was made, or the copy of the operation log / to the second device failed)
 #            2 = WARNING (the data file is less than half the size of the last good backup;
 #                         the copy is kept aside as SHRUNK_*.db and no generation is deleted.
-#                         Also: an operation-log file is smaller than its backup copy)
+#                         Also: an operation-log file was cut or changed after it had been backed up)
 # The operation log (audit-YYYY-MM.jsonl) is copied to <LocalDir>\audit and, with it, to the second device.
 param(
   [string]$DbPath      = 'C:\hiyou\data\hiyou.db',            # same file as DB_PATH in .env
@@ -52,6 +52,96 @@ function Get-SharedLength([string]$path) {
   # folder listing can be out of date, so ask through a file handle instead.
   $in = Open-Shared $path
   try { return $in.Length } finally { $in.Close() }
+}
+function Get-PrefixHash([string]$path, [long]$length) {
+  # SHA-256 of the first $length bytes of a file.
+  $in = Open-Shared $path
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $buf  = New-Object byte[] 1048576
+      $left = $length
+      while ($left -gt 0) {
+        $n = $in.Read($buf, 0, [int][Math]::Min([long]$buf.Length, $left))
+        if ($n -le 0) { break }
+        [void]$sha.TransformBlock($buf, 0, $n, $null, 0)
+        $left -= $n
+      }
+      [void]$sha.TransformFinalBlock($buf, 0, 0)
+      return [System.BitConverter]::ToString($sha.Hash)
+    } finally { $sha.Dispose() }
+  } finally { $in.Close() }
+}
+function Copy-OperationLog([string]$srcDir, [string]$dstDir, [bool]$explicit, [string]$stamp) {
+  # Operation log = audit-YYYY-MM.jsonl, one file per month, written by the app next to the database.
+  # These are append-only text files, so a healthy file only ever GROWS and always still starts with
+  # the content that was backed up before. Anything else means somebody cut or edited the log:
+  #   - smaller than its backup copy          -> not copied, the bigger backup copy is kept, WARNING
+  #   - no longer starts with the backup copy -> the old backup copy is kept as <name>.before-<stamp>, WARNING
+  # Nothing is ever deleted here. Returns 0 = OK, 1 = ERROR, 2 = WARNING.
+  if (-not (Test-Path -LiteralPath $srcDir)) {
+    if ($explicit) {
+      Write-Log "ERROR operation log folder not found: $srcDir (given with -AuditDir)"
+      return 1
+    }
+    Write-Log "operation log: folder not found, nothing copied: $srcDir (normal for an app version without the operation log. If AUDIT_LOG_DIR is set in .env, pass that folder with -AuditDir)"
+    return 0
+  }
+  $result = 0
+  $copied = 0
+  $names  = @()
+  New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
+  foreach ($f in @(Get-ChildItem -LiteralPath $srcDir -Filter 'audit-*.jsonl' -File | Sort-Object Name)) {
+    $names += $f.Name
+    try {
+      # One unreadable file must not stop the others (the current month matters most).
+      $target = Join-Path $dstDir $f.Name
+      $srcLen = Get-SharedLength $f.FullName
+      if (Test-Path -LiteralPath $target) {
+        $dstLen = (Get-Item -LiteralPath $target).Length
+        if ($srcLen -eq $dstLen) { continue }
+        if ($srcLen -lt $dstLen) {
+          Write-Log "WARNING operation log $($f.Name) is smaller ($srcLen bytes) than its backup copy ($dstLen bytes). The backup copy is kept. CHECK WHO CHANGED THE LOG."
+          if ($result -eq 0) { $result = 2 }
+          continue
+        }
+        if ((Get-PrefixHash $f.FullName $dstLen) -ne (Get-SharedHash $target)) {
+          $aside = "$($f.Name).before-$stamp"
+          Rename-Item -LiteralPath $target -NewName $aside
+          Write-Log "WARNING operation log $($f.Name) no longer starts with the content of its backup copy (lines were changed or removed). The old backup copy is kept as $aside. CHECK WHO CHANGED THE LOG."
+          if ($result -eq 0) { $result = 2 }
+        }
+      }
+      Copy-Shared $f.FullName $target
+      $copied++
+    } catch {
+      Write-Log "ERROR operation log copy failed for $($f.Name): $($_.Exception.Message)"
+      $result = 1
+    }
+  }
+  $note = ''
+  $onlyInBackup = @(Get-ChildItem -LiteralPath $dstDir -Filter 'audit-*.jsonl' -File | Where-Object { $names -notcontains $_.Name })
+  if ($onlyInBackup.Count) { $note = " ($($onlyInBackup.Count) month file(s) exist only in the backup: moved away or deleted from the live folder)" }
+  Write-Log "operation log: $copied file(s) copied to $dstDir$note"
+  return $result
+}
+function Get-ExitCode([int]$a, [int]$b) {
+  # Worst of two results: 1 (error) beats 2 (warning) beats 0.
+  if ($a -eq 1 -or $b -eq 1) { return 1 }
+  if ($a -eq 2 -or $b -eq 2) { return 2 }
+  return 0
+}
+
+# 0) Operation log first, so that it is copied even on a night when the database backup below fails.
+#    A problem here is reported through the exit code, but it never stops the database backup.
+$auditCode = 0
+try {
+  $auditGiven = [bool]$AuditDir
+  if (-not $auditGiven) { $AuditDir = Join-Path (Split-Path -Parent $DbPath) 'audit' }
+  $auditCode = Copy-OperationLog $AuditDir (Join-Path $LocalDir 'audit') $auditGiven (Get-Date -Format 'yyyyMMdd_HHmmss')
+} catch {
+  Write-Log "ERROR operation log copy failed: $($_.Exception.Message). The database backup is not affected."
+  $auditCode = 1
 }
 
 try {
@@ -103,42 +193,10 @@ try {
     Write-Log "$detail -> $dest"
   }
 
-  # 4b) Operation log (audit-YYYY-MM.jsonl, one file per month, written by the app next to the database).
-  #     These are append-only text files: a month file that grew is copied again; nothing is ever deleted here.
-  #     A file that became SMALLER than its backup copy is not copied (the bigger backup copy is kept) and is
-  #     reported as a WARNING: someone deleted or cut the log.
-  #     A problem here is reported through the exit code, but it never undoes the database backup made above.
-  if (-not $AuditDir) { $AuditDir = Join-Path (Split-Path -Parent $DbPath) 'audit' }
-  if (Test-Path -LiteralPath $AuditDir) {
-    try {
-      $auditDest = Join-Path $LocalDir 'audit'
-      New-Item -ItemType Directory -Force -Path $auditDest | Out-Null
-      $copied = 0
-      foreach ($f in @(Get-ChildItem -LiteralPath $AuditDir -Filter 'audit-*.jsonl' -File | Sort-Object Name)) {
-        $target = Join-Path $auditDest $f.Name
-        $srcLen = Get-SharedLength $f.FullName
-        $dstLen = -1
-        if (Test-Path -LiteralPath $target) { $dstLen = (Get-Item -LiteralPath $target).Length }
-        if ($srcLen -eq $dstLen) { continue }
-        if ($srcLen -lt $dstLen) {
-          Write-Log "WARNING operation log $($f.Name) is smaller ($srcLen bytes) than its backup copy ($dstLen bytes). The backup copy is kept. CHECK WHO CHANGED THE LOG."
-          if ($code -eq 0) { $code = 2 }
-          continue
-        }
-        Copy-Shared $f.FullName $target
-        $copied++
-      }
-      Write-Log "operation log: $copied file(s) copied to $auditDest"
-    } catch {
-      Write-Log "ERROR operation log copy failed: $($_.Exception.Message). The database backup is not affected."
-      $code = 1
-    }
-  }
-
   # 5) Second device: copy the already-verified backup folder (never the live file) to the NAS / other PC.
   #    /E without /PURGE: files deleted locally are NOT deleted on the second device; it keeps its own, longer history.
   #    The folder must already exist: a mistyped path or a NAS that is switched off is reported, never "repaired"
-  #    by silently creating a new folder somewhere else.
+  #    by silently creating a new folder somewhere else. The "audit" folder (operation log) goes with it.
   if ($RemoteDir) {
     if (-not (Test-Path -LiteralPath $RemoteDir)) {
       Write-Log "ERROR second device folder not found: $RemoteDir (it is never created automatically). The local backup is not affected."
@@ -154,7 +212,7 @@ try {
       Get-ChildItem -LiteralPath $remoteDaily -Filter 'hiyou_*.db' | Sort-Object Name -Descending | Select-Object -Skip $KeepRemoteDaily | Remove-Item -Force
     }
   }
-  exit $code
+  exit (Get-ExitCode $code $auditCode)
 } catch {
   Write-Log "ERROR $($_.Exception.Message)"
   exit 1
