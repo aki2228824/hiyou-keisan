@@ -126,7 +126,9 @@ router.get('/', async (req, res) => {
     });
 
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="seikyu_${patient_id}_${year}${month}.pdf"` });
-    res.send(pdf);
+    // Puppeteer 23 以降、page.pdf() は Buffer ではなく Uint8Array を返す。
+    // Express の res.send() は Buffer 以外のオブジェクトを JSON として送ってしまうので、Buffer に直してから送る。
+    res.send(Buffer.from(pdf));
   } catch (err) {
     console.error('PDF生成に失敗しました:', err);
     if (!res.headersSent) res.status(500).json({ error: 'PDFの生成に失敗しました' });
