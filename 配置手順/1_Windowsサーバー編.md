@@ -47,7 +47,7 @@ C:\hiyou\app      コード（git clone 先）。.env、.cache（Chrome）、nod
 C:\hiyou\data     hiyou.db（.env の DB_PATH で指定。コードと分け、git 操作の影響を受けないようにする）
 C:\hiyou\logs     サービスのログ
 C:\hiyou\service  WinSW（hiyou-service.exe と hiyou-service.xml）
-C:\hiyou\backup   更新前の DB コピー
+C:\hiyou\backup   毎晩のバックアップ（daily / monthly。2_運用編の 2章）と、更新前の DB コピー
 ```
 
 サーバー機でのコマンドはすべて **「管理者として実行」した Windows PowerShell** で実行する（スタートを右クリック →「ターミナル（管理者）」）。
@@ -104,7 +104,7 @@ winget install --id OpenJS.NodeJS.LTS -e --source winget
 winget install --id Git.Git -e --source winget
 ```
 
-- winget が無い Windows Server 2019 / 2022 では `https://nodejs.org/dist/v26.13.1/node-v26.13.1-x64.msi` を実行する（SHA-256: `0398ced8446e119478c724d1aa37c5afd6aa1a76fceab12787eb9714c5ed8b45`）。途中の「Tools for Native Modules」のチェックは**入れない**（このアプリにビルドが必要なモジュールは無い。bcryptjs は純 JavaScript、sql.js は WASM）。
+- winget が無い Windows Server 2019 / 2022 では `https://nodejs.org/dist/v26.13.1/node-v26.13.1-x64.msi` を実行する（SHA-256: `0398ced8446e119478c724d1aa37c5afd6aa1a76fceab12787eb9714c5ed8b45`。実行前に、ダウンロードしたフォルダで `(Get-FileHash .\node-v26.13.1-x64.msi -Algorithm SHA256).Hash` を実行して同じ値か確かめる。大文字・小文字の違いは無視してよい）。途中の「Tools for Native Modules」のチェックは**入れない**（このアプリにビルドが必要なモジュールは無い。bcryptjs は純 JavaScript、sql.js は WASM）。
 - nvm-windows / fnm / Volta は使わない。ユーザーごとの場所に入るので、サービスのアカウントから node.exe が見えなくなる。
 
 PowerShell を**開き直して**確認する:
@@ -181,7 +181,7 @@ notepad C:\hiyou\app\.env
    - `DIFY_API_URL` / `DIFY_API_KEY`: 開発PCの .env の値を写す
    - `SESSION_SECRET=<上の 64 文字>`（行頭の # を外す。未設定だとリポジトリに書かれた既定値で署名される）
    - `PORT=3000`
-   - `DB_PATH=C:/hiyou/data/hiyou.db`（区切りは `/`）
+   - `DB_PATH=C:/hiyou/data/hiyou.db`（区切りは `/`。テンプレートでは行頭に # が付いているので、# を外す。`PORT` の行も同じく # を外す）
    - 開発PCの現在の .env には SESSION_SECRET / PORT / DB_PATH の 3 つが無いので、必ず追加する。完成形の例は `C:\hiyou\app\配置手順\付属ファイル\windows\env.server.example`。
 
 2. **DB**: 開発PCでアプリを止めてから（保存途中のファイルを持ち出さないため）`data\hiyou.db` を USB メモリ等でサーバーの `C:\hiyou\data\hiyou.db` に置く。USB 側は消す。
@@ -211,7 +211,7 @@ DBファイル: C:\hiyou\data\hiyou.db（65,536 バイト）   ← DB_PATH の�
 
 - **`初期管理者を作成しました: admin / admin123` が出たら、DB を引き継いだつもりなのに空の DB が新規作成されている**（DB_PATH の書き間違い、または .env を読めていない）。止めて直す。
 - 「Windows セキュリティの重要な警告（Node.js JavaScript Runtime）」が出ることがある。どちらを押してもよい（自動で作られる規則は Step 8 で消す）。
-- サーバー機のブラウザーで `http://localhost:3000` → ログイン → 月次集計 → PDF を 1 枚出す。
+- サーバー機のブラウザーで `http://localhost:3000` → ログイン → 月次集計 → PDF を 1 枚出す。空の DB から始めた場合は患者が 1 人もいないので、先にマスタ管理 → 患者管理でテスト用の患者を 1 名登録してから出す（Step 7 の確認 4 と Step 9 でも使い、確認がすべて終わったら削除する）。
 - 確認できたら **Ctrl+C で必ず止める**（動かしたまま次へ進むと、サービス側がポート重複で落ち続ける）。
 
 ### Step 7. Windows サービスにする（WinSW v2.12.0）
@@ -289,7 +289,7 @@ Test-NetConnection 192.168.1.10 -Port 3000      # TcpTestSucceeded : True
 
 - サービスは再起動後に自動で立ち上がるので、放置しても復帰する。ただし**再起動のたびに全員ログアウトになり**（ログイン状態はメモリ上）、「一括保存」前の入力は失われうる。
 - 設定 → Windows Update → 詳細オプション → アクティブ時間 を手動で 5:00〜23:00 にする（幅は最大 18 時間）。自動再起動が 23:00〜5:00 に寄り、月曜 6:00 の週次ジョブとも重ならない。
-- 月曜 6:00 に PC が止まっていた週のレポートは送られない（後追い実行はしない）。README の「手動実行 API」で送り直す。
+- 月曜 6:00 に PC が止まっていた週のレポートは送られない（後追い実行はしない）。プロジェクト直下の README.md（`C:\hiyou\app\README.md`。この配置手順フォルダの README ではない）の「手動実行API（管理者のみ）」で送り直す。
 
 ### Step 11. 切り替え後の開発PCの後始末
 
@@ -310,7 +310,7 @@ Test-NetConnection 192.168.1.10 -Port 3000      # TcpTestSucceeded : True
 | `C:\hiyou\app\data\export.log` | 週次レポートの送信結果。DB_PATH を変えても場所は変わらない（コードで固定） |
 | イベント ビューアー → Windows ログ → システム（ソース: Service Control Manager） | サービスの異常終了と再起動の記録 |
 
-- out / err は 10MB で切り替わり、8 世代まで残る（`hiyou-service.1.out.log` …）。
+- out / err は 10MB で切り替わり、8 世代まで残る（新しい順に `hiyou-service.0.out.log` 〜 `hiyou-service.7.out.log`）。
 - 文字コードは UTF-8。PowerShell では `-Encoding UTF8` を付けないと文字化けする: `Get-Content C:\hiyou\logs\hiyou-service.err.log -Tail 50 -Encoding UTF8`
 
 ### 更新手順（業務時間外に。全員ログアウトになる）

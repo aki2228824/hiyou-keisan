@@ -139,7 +139,7 @@ git status --short     # Dockerfile、docker-compose.yml、.dockerignore、.gita
   1. Container Station をインストール（共有フォルダ `Container` ができる）。
   2. 4 章の 5〜8 と同じ要領で `\\NASのIP\Container\hiyou-keisan` にコピー（`data` フォルダと `.env` も）。
   3. コントロールパネル → ネットワークとファイルサービス → Telnet / SSH で SSH を有効化。
-  4. `ssh admin@NASのIP` → `cd /share/Container/hiyou-keisan` → `docker compose up -d --build`
+  4. `ssh 管理者ユーザー@NASのIP`（QTS 5 では既定の `admin` を無効にしていることがあるので、administrators グループの自分のユーザーで入る。`docker` が権限エラーになるときは先頭に `sudo` を付ける） → `cd /share/Container/hiyou-keisan` → `docker compose up -d --build`
   5. 6 章の確認。
 
 ## 6. 起動後の確認（期待される出力）
@@ -150,10 +150,11 @@ SSH で実行します。以下は Synology の書き方（`sudo` と `docker-co
 sudo docker ps --filter name=hiyou-keisan --format '{{.Names}}  {{.Status}}  {{.Ports}}'
 # 期待: hiyou-keisan  Up 2 minutes (healthy)  0.0.0.0:3000->3000/tcp
 sudo docker logs hiyou-keisan
-# 期待: 「週次使用量レポート: cron登録 (0 6 * * 1 / Asia/Tokyo)」（無効なら「…無効」）
+# 期待: 「DBファイル: /app/data/hiyou.db（○○ バイト）」（データを移行したのに「見つからないため新しく作成します」と出たら hiyou.db が読まれていない）
+#       「週次使用量レポート: cron登録 (0 6 * * 1 / Asia/Tokyo)」（無効なら「…無効」）
 #       「療養介護サービス提供実績記録票 起動: http://localhost:3000」
 sudo docker top hiyou-keisan
-# 期待: 「node server/index.js」の行の UID が 1000（root ではない）
+# 期待: 「node server/index.js」の行の UID が 1000（root ではない）。QNAP や Linux 機（7-2）では、ホスト側に uid 1000 のユーザーがいるとその名前で表示される（root でなければよい）
 sudo docker exec hiyou-keisan fc-match "MS Gothic"
 # 期待: ipag.ttf: "IPAGothic" "Regular"
 sudo docker exec hiyou-keisan date
@@ -170,7 +171,7 @@ sudo docker exec hiyou-keisan date
 | プロジェクト作成時に `data` が無い旨のエラー | `data` フォルダを作る（4 章 5） |
 | `env file ... .env not found` | `.env` を置く（4 章 7） |
 | 再起動を繰り返し、ログに `DB初期化エラー` と `EACCES` | data に書き込めない。ログの `entrypoint: WARNING` を確認し、`sudo chown -R 1000:1000 /volume1/docker/hiyou-keisan/data` |
-| ログに `database disk image is malformed` | DB ファイルが壊れている。9-3 の手順で復元 |
+| ログに `database disk image is malformed`、または「DBファイルが0バイトです（破損の可能性があります）」 | DB ファイルが壊れている。9-3 の手順で復元 |
 | PDF だけ失敗（画面に「PDFの生成に失敗しました」） | `sudo docker logs hiyou-keisan` の `PDF生成に失敗しました:` 以降を見る。メモリ不足なら NAS のメモリ増設。Chromium と Puppeteer 22 の相性が原因なら、x86-64 機に限り Dockerfile の ENV から `PUPPETEER_SKIP_DOWNLOAD` と `PUPPETEER_EXECUTABLE_PATH` を外して `PUPPETEER_CACHE_DIR=/app/.cache/puppeteer` を足すと、Puppeteer 同梱の Chrome 127 を使う構成になる（未テストの代替案） |
 | 3000 番が使用中 | compose の `ports` の左側だけ変える（例 `"8080:3000"`） |
 
@@ -218,7 +219,7 @@ Synology VMM は Btrfs ボリュームと 2GB 超のメモリが必須（公式�
 4. Container Manager → プロジェクト → hiyou-keisan → 停止 → ビルド。または SSH で `cd /volume1/docker/hiyou-keisan && sudo docker-compose up -d --build`。GUI と SSH を混ぜると表示が食い違うことがあるので、どちらかに統一。
 5. 6 章の確認（最低限 `healthy` と PDF 1 枚）。
 6. 戻すときは、前の版のソースで 3〜5 をやり直す。DB も戻すなら 9-3。
-7. Debian と Chromium の更新を取り込む再ビルド（3 か月に 1 回程度）: `sudo docker-compose build --pull --no-cache && sudo docker-compose up -d`、その後 `sudo docker image prune -f`。
+7. Debian と Chromium の更新を取り込む再ビルド（3 か月に 1 回程度）: `cd /volume1/docker/hiyou-keisan && sudo docker-compose build --pull --no-cache && sudo docker-compose up -d`、その後 `sudo docker image prune -f`。
 
 ## 9. バックアップと復元
 
@@ -232,6 +233,8 @@ Synology: 先に DSM で共有フォルダ `backup`（管理者のみアクセ�
 ```sh
 DEST=/volume1/backup/hiyou-keisan sh /volume1/docker/hiyou-keisan/backup-hiyou.sh
 ```
+
+**空の DB から始めた場合、最初の患者を登録するまでは「患者が 0 人」として異常終了になる**（スクリプトの仕様。空の DB は「DB を見失って新規作成された」状態と区別できないため）。QNAP では場所を指定して実行する（実機未確認）: `APP_DIR=/share/Container/hiyou-keisan DEST=/share/backup/hiyou-keisan sh /share/Container/hiyou-keisan/backup-hiyou.sh`
 
 期待される出力: `integrity=ok patients=120` と `backup OK: /volume1/backup/hiyou-keisan/hiyou-20261121-023000.db`。保存先は NAS 本体とは別の媒体（USB・別 NAS）にもコピーする。
 
@@ -247,7 +250,7 @@ sudo docker-compose start
 
 動作中に差し替えても、次の保存でメモリ上の内容に上書きされて元に戻ってしまいます（`database.js`）。
 
-**9-4. 復元テスト（月 1 回）**: バックアップを開発 PC にコピーし、PowerShell で
+**9-4. 復元テスト（月 1 回）**: バックアップを開発 PC に `C:\temp\restore-test\hiyou.db` という名前でコピーし（この場所にファイルが無いと、空の DB が新しく作られて起動してしまう。起動時の「DBファイル: …（○○ バイト）」の行で確認）、PowerShell で
 
 ```powershell
 cd C:\temp\hiyou-keisan
@@ -261,6 +264,7 @@ $env:DB_PATH='C:\temp\restore-test\hiyou.db'; $env:EXPORT_ENABLED='false'; $env:
 - **停止・更新・NAS の再起動は、利用者のいない時間に**。2026-11-21 の修正で、保存の途中でプロセスや電源が落ちても DB ファイルは直前の完全な内容のまま残るようになりました（その瞬間に保存中だった入力は失われます）。UPS は引き続き推奨。
 - 動作中は `data/hiyou.db` を開かない・コピー以外の操作をしない・差し替えない。
 - 再起動のたびに全員ログインし直し（セッションはメモリ上）。
+- コンテナには `tools/` のスクリプトを入れていない。初期パスワードが残っていないかの確認は、バックアップした DB を開発 PC にコピーして `node tools\check-default-password.js <コピーしたDBのパス>` で行う。
 - 週次レポート（月曜 6:00）は、その時刻に NAS が起動していて、コンテナから `https://api.dify.ai` へ出られることが条件。出られない構成なら `.env` で `EXPORT_ENABLED=false`。結果は `data/export.log`。
 - 通信は HTTP（暗号化なし）。LAN 内限定の前提で、対策は [2_運用編.md](2_運用編.md) の 3章・4章を参照。
 

@@ -9,7 +9,7 @@ const { join } = require('path');
  * - サーバーを動かすアカウント（Windows サービスの LocalSystem など）が
  *   npm ci を実行したユーザーと違っても、同じ場所を見るので PDF 出力が失敗しない
  * - この設定ファイルは「作業ディレクトリから上のフォルダ」に向かって探されるため、
- *   サーバーは必ずプロジェクトのルートを作業ディレクトリにして起動すること
+ *   npm ci や npx puppeteer browsers install chrome はプロジェクトのフォルダ内で実行すること（サーバーの起動時は server/index.js の先頭で同じ場所を環境変数 PUPPETEER_CACHE_DIR でも指定しているので、作業ディレクトリが違っても見つかる）
  *
  * @type {import("puppeteer").Configuration}
  */

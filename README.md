@@ -150,6 +150,15 @@ curl -c cookie.txt -H "Content-Type: application/json"   -d '{"username":"admin"
 curl -b cookie.txt -X POST "http://localhost:3000/api/export/weekly-usage/run?dry=1"
 ```
 
+Windows の PowerShell から実行する場合（ユーザーIDとパスワードは管理者のものに置き換える）：
+
+```powershell
+$s = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+Invoke-RestMethod -Uri 'http://localhost:3000/api/auth/login' -Method Post -ContentType 'application/json' -Body '{"username":"admin","password":"パスワード"}' -WebSession $s
+Invoke-RestMethod -Uri 'http://localhost:3000/api/export/weekly-usage/run?dry=1' -Method Post -WebSession $s   # ドライラン（送信しない）
+Invoke-RestMethod -Uri 'http://localhost:3000/api/export/weekly-usage/run' -Method Post -WebSession $s         # 実際に送信する（月曜6:00の分を送り直すとき）
+```
+
 ### 送信の失敗時
 
 Dify へ送れなかった場合は 1分 → 5分 → 15分 の間隔で最大3回リトライします。最終的に失敗してもサーバー本体は停止せず、`data/export.log` にエラーを記録します。
@@ -180,7 +189,7 @@ Dify へ送れなかった場合は 1分 → 5分 → 15分 の間隔で最大3�
 - データベースは `data/hiyou.db` に保存されます（環境変数 `DB_PATH` で変更可）
 - 保存は一時ファイル（`hiyou.db.tmp`）へ書いてから差し替える方式です（保存の途中で電源が落ちても、DBファイルは直前の完全な内容のまま残ります）。DBファイルが0バイトのときは、空のDBで上書きせずに起動を止めます
 - バックアップは `tools/backup-hiyou.ps1` を使ってください（コピー後に中身を検査し、世代を残します）。手順は [配置手順/2_運用編.md](配置手順/2_運用編.md)
-- 日次入力の「一括保存」は、変更した欄だけを送ります（同じ患者・同じ月を2人が開いていても、互いの入力を古い値で上書きしません）
+- 日次入力の「一括保存」は、変更した欄だけを送ります（同じ患者・同じ月を2人が開いていても、互いの入力を古い値で上書きしません。ただし朝食・昼食・夕食・サービス提供の状況・加算2つの計6欄は1日分をまとめて送るため、同じ日のこの6欄を2人が別々に直した場合は、後から保存した人の画面の値になります）
 - 日用品単価は月ごとに設定でき、未設定の月は直近の過去月の設定値を自動引き継ぎします（マスタ画面・日次入力・月次集計・請求書PDFすべて共通。参照ロジックは [server/services/prices.js](server/services/prices.js) に集約）
 - 食事単価・食事費上限は患者ごと・月ごとに設定可能です（こちらも未設定の月は直近の過去月から引き継ぎます）
 

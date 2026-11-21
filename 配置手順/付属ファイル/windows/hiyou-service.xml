@@ -16,7 +16,7 @@
   <executable>C:\Program Files\nodejs\node.exe</executable>
   <arguments>C:\hiyou\app\server\index.js</arguments>
 
-  <!-- MUST be the project root: .env (dotenv) and .puppeteerrc.cjs (Puppeteer) are looked up from the working directory. -->
+  <!-- Keep this at the project root. Since 2026-11-21 server\index.js loads .env and sets the Chrome cache folder (PUPPETEER_CACHE_DIR) from its own location, so the app no longer depends on the working directory; the project root is kept as the safe default. -->
   <workingdirectory>C:\hiyou\app</workingdirectory>
 
   <!-- Start at boot, before anyone logs on. -->
