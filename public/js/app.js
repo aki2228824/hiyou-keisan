@@ -35,33 +35,60 @@ function showLoginOverlay() {
   };
 }
 
+let loggingIn = false; // ログインの問い合わせ中か（二重送信の防止。失敗は1回ごとにロックまでの回数に数えられるため）
+
 async function doLogin() {
+  if (loggingIn) return;
   const username = document.getElementById('login-username').value.trim();
   const password = document.getElementById('login-password').value;
   const errEl = document.getElementById('login-error');
   errEl.classList.add('hidden');
 
-  let res;
+  const button = document.querySelector('#login-overlay .login-btn');
+  loggingIn = true;
+  if (button) button.disabled = true;
   try {
-    res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-  } catch (e) {
-    showLoginError('サーバーに接続できません。ネットワークとサーバーの状態を確認してください。');
-    return;
+    let res;
+    try {
+      res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+    } catch (e) {
+      showLoginError('サーバーに接続できません。ネットワークとサーバーの状態を確認してください。');
+      return;
+    }
+    if (res.ok) {
+      currentUser = await res.json();
+      // パスワードが現在の基準を満たしていないときは、サーバーが注意の文を付けて返す
+      const warning = currentUser.password_warning;
+      delete currentUser.password_warning;
+      document.getElementById('login-overlay').classList.add('hidden');
+      document.getElementById('login-password').value = '';
+      hideNotice();
+      onLoggedIn();
+      if (warning) showNotice(warning);
+    } else {
+      // パスワードの誤り（401）のほか、続けて失敗したときのロック（429）もここでメッセージを表示する
+      const data = await res.json().catch(() => ({}));
+      errEl.textContent = data.error || 'ログインに失敗しました';
+      errEl.classList.remove('hidden');
+    }
+  } finally {
+    loggingIn = false;
+    if (button) button.disabled = false;
   }
-  if (res.ok) {
-    currentUser = await res.json();
-    document.getElementById('login-overlay').classList.add('hidden');
-    document.getElementById('login-password').value = '';
-    onLoggedIn();
-  } else {
-    const data = await res.json().catch(() => ({}));
-    errEl.textContent = data.error || 'ログインに失敗しました';
-    errEl.classList.remove('hidden');
-  }
+}
+
+// 画面上部のお知らせ（閉じるまで表示）
+function showNotice(message) {
+  document.getElementById('notice-text').textContent = message;
+  document.getElementById('notice-bar').classList.remove('hidden');
+}
+
+function hideNotice() {
+  document.getElementById('notice-bar').classList.add('hidden');
 }
 
 async function doLogout() {
@@ -585,6 +612,7 @@ function showMasterTab(name) {
   if (name === 'items')    renderMasterItems();
   if (name === 'prices')   renderMasterPrices();
   if (name === 'users')    renderMasterUsers();
+  if (name === 'audit')    renderMasterAudit();
 }
 
 async function initMasterPage() {
@@ -773,18 +801,23 @@ async function savePrices() {
 
 // --- ユーザー管理 ---
 async function renderMasterUsers() {
-  const users = await api('/users');
+  // policy: パスワードの基準と、ログイン失敗時のロックの設定（説明の表示用）
+  const [users, policy] = await Promise.all([api('/users'), api('/users/password-policy')]);
   masterUsers = users;
   const roleOpts = (cur) => ['admin','staff','viewer'].map(r =>
     `<option value="${r}" ${r===cur?'selected':''}>${esc(roleName(r))}</option>`
   ).join('');
 
+  // locked_seconds > 0 のユーザーは、ログインに続けて失敗してロック中（残り秒数）
   const rows = users.map(u => `
     <tr>
       <td><input id="u-name-${u.id}" value="${esc(u.username)}" style="width:110px"></td>
       <td><select id="u-role-${u.id}">${roleOpts(u.role)}</select></td>
-      <td><input type="password" id="u-pass-${u.id}" placeholder="変更する場合のみ入力" style="width:150px"></td>
-      <td><label><input type="checkbox" id="u-active-${u.id}" ${u.active?'checked':''}> 有効</label></td>
+      <td><input type="password" id="u-pass-${u.id}" placeholder="変更する場合のみ入力" style="width:150px" autocomplete="new-password"></td>
+      <td><label><input type="checkbox" id="u-active-${u.id}" ${u.active?'checked':''}> 有効</label>${
+        u.locked_seconds > 0 ? `<div class="lock-note">ロック中（あと約${Math.ceil(u.locked_seconds / 60)}分）
+          <button onclick="unlockUser(${u.id})" class="btn-sm">ロック解除</button></div>` : ''
+      }</td>
       <td><button onclick="saveUser(${u.id})" class="btn-sm btn-register">登録</button></td>
       <td><button onclick="deleteUser(${u.id})" class="btn-danger">削除</button></td>
     </tr>`).join('');
@@ -792,10 +825,12 @@ async function renderMasterUsers() {
   document.getElementById('master-users').innerHTML = `
     <div class="add-row" style="justify-content:flex-end">
       <input id="new-u-name" placeholder="ユーザーID" style="width:120px">
-      <input type="password" id="new-u-pass" placeholder="パスワード" style="width:120px">
+      <input type="password" id="new-u-pass" placeholder="パスワード" style="width:160px" autocomplete="new-password">
       <select id="new-u-role">${roleOpts('staff')}</select>
       <button onclick="addUser()" class="btn-primary">追加</button>
     </div>
+    <p class="policy-note">パスワードの基準：${esc(policy.description)}<br>
+      ログインに${esc(policy.max_failures)}回続けて失敗したユーザーIDは、${esc(policy.lock_minutes)}分間ログインできなくなります（この画面の「ロック解除」で、すぐに戻せます）。</p>
     <table class="master-table">
       <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
@@ -835,8 +870,181 @@ async function addUser() {
   const password = document.getElementById('new-u-pass').value;
   const role     = document.getElementById('new-u-role').value;
   if (!username || !password) return alert('ユーザーIDとパスワードを入力してください');
+  // パスワードが基準を満たさないときは、サーバーが理由を返す（共通のエラー表示に出る。入力欄はそのまま残る）
   await api('/users', { method: 'POST', body: { username, password, role } });
+  showToast(`ユーザー「${username}」を追加しました`);
   renderMasterUsers();
+}
+
+// ログイン失敗の連続によるロックを解除する
+async function unlockUser(id) {
+  const username = masterUsers.find(x => x.id == id)?.username ?? '';
+  await api(`/users/${id}/unlock`, { method: 'POST' });
+  showToast(`「${username}」のロックを解除しました`);
+  renderMasterUsers();
+}
+
+// --- 操作ログ ---
+// サーバーが記録する出来事の種類（server/middleware/audit.js、server/routes/auth.js）と、画面での呼び名
+const AUDIT_ACTIONS = {
+  'login.success': 'ログイン', 'login.failure': 'ログイン失敗', 'login.locked': 'ログイン拒否（ロック中）',
+  'login.failure.skipped': 'ログイン失敗（多数のため個別の記録を省略）', 'logout': 'ログアウト',
+  'records.view': '実績の表示', 'records.save': '実績の保存', 'summary.view': '月次集計の表示',
+  'mealprices.view': '食事単価の表示', 'mealprices.list': '食事単価の一覧表示', 'mealprices.save': '食事単価の保存',
+  'pdf.export': '請求書PDFの出力',
+  'patients.list': '患者一覧の表示', 'patients.create': '患者の追加', 'patients.update': '患者の変更', 'patients.delete': '患者の削除',
+  'items.create': '物品の追加', 'items.update': '物品の変更', 'items.delete': '物品の削除', 'prices.save': '日用品単価の保存',
+  'wards.create': '病棟の追加', 'wards.update': '病棟の変更',
+  'users.list': 'ユーザー一覧の表示', 'users.create': 'ユーザーの追加', 'users.update': 'ユーザーの変更',
+  'users.delete': 'ユーザーの削除', 'users.unlock': 'ロックの解除',
+  'export.run': '週次レポートの手動実行', 'audit.view': '操作ログの表示', 'server.start': 'サーバーの起動', 'other': 'その他の操作',
+};
+
+let auditCondition = '';   // 表示中の一覧の検索条件（CSV保存で同じ条件を使う）
+
+function auditTime(row) {
+  const t = String(row.t || '');
+  return t.slice(0, 10) + ' ' + t.slice(11, 19);
+}
+
+function auditUser(row) {
+  if (row.action === 'server.start') return '（サーバー）';
+  if (row.user == null) return '（未ログイン）';
+  return row.role ? `${row.user}（${roleName(row.role)}）` : String(row.user);
+}
+
+function auditTarget(row) {
+  const parts = [];
+  if (row.patient_id != null)
+    parts.push(row.patient_name ? `${row.patient_name}（患者ID ${row.patient_id}）` : `患者ID ${row.patient_id}`);
+  if (row.target != null) parts.push(`ID ${row.target}`);
+  return parts.join(' ');
+}
+
+function auditResult(row) {
+  if (row.aborted) return '中断';
+  const status = Number(row.status);
+  if (!status) return '';
+  if (status < 400) return '成功';
+  const names = { 400: '入力の誤り', 401: '未ログイン・認証失敗', 403: '権限なし', 404: '対象なし', 409: '重複', 429: 'ロック' };
+  return `${names[status] || 'エラー'}（${status}）`;
+}
+
+// 記録の内容（detail）を読みやすい文にする。決まった形のもの以外は、そのままの形（JSON）で出す
+function auditDetail(row) {
+  const detail = row.detail;
+  if (detail == null) return '';
+  if (typeof detail !== 'object') return String(detail);
+  const rest = { ...detail };
+  const parts = [];
+  if (rest.year != null && rest.month != null) { parts.push(`${rest.year}年${Number(rest.month)}月分`); delete rest.year; delete rest.month; }
+  if (rest.record_date != null) { parts.push(`${rest.record_date} の分`); delete rest.record_date; }
+  if (rest.weak_password) { parts.push('パスワードが基準を満たしていない'); delete rest.weak_password; }
+  if (rest.locked) { parts.push(`この失敗でロック（${rest.minutes}分間）`); delete rest.locked; delete rest.minutes; }
+  if (Object.keys(rest).length) parts.push(JSON.stringify(rest));
+  return parts.join(' ／ ');
+}
+
+function renderMasterAudit() {
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  document.getElementById('master-audit').innerHTML = `
+    <div class="audit-toolbar">
+      <label>期間 <input type="date" id="audit-from" value="${today}"> 〜 <input type="date" id="audit-to" value="${today}"></label>
+      <label>ユーザーID <input type="text" id="audit-user" list="audit-user-list" placeholder="すべて" style="width:120px"></label>
+      <datalist id="audit-user-list"></datalist>
+      <label>種類 <select id="audit-kind">
+        <option value="">すべて</option>
+        <option value="auth">ログイン・ログアウト</option>
+        <option value="view">表示・出力</option>
+        <option value="change">登録・変更・削除</option>
+        <option value="denied">断られた操作・エラー</option>
+      </select></label>
+      <label>キーワード <input type="text" id="audit-q" placeholder="IPアドレスなど" style="width:140px"></label>
+      <button onclick="loadAuditLog()" class="btn-primary">表示</button>
+      <button onclick="downloadAuditCsv()" class="btn-secondary">CSV保存</button>
+    </div>
+    <p class="policy-note">ログイン・ログアウト、患者の情報の表示と出力、登録・変更・削除の操作を、サーバーが自動で記録しています（新しい順に表示）。
+      月に1回は「断られた操作・エラー」と「ログイン・ログアウト」を確認してください。</p>
+    <div id="audit-status"></div>
+    <div id="audit-table"></div>`;
+  return loadAuditLog();
+}
+
+// 画面の検索条件を、API のクエリ文字列にする
+function auditQuery(limit) {
+  const params = new URLSearchParams();
+  for (const [key, id] of [['from', 'audit-from'], ['to', 'audit-to'], ['user', 'audit-user'], ['kind', 'audit-kind'], ['q', 'audit-q']]) {
+    const value = document.getElementById(id).value.trim();
+    if (value) params.set(key, value);
+  }
+  params.set('limit', String(limit));
+  return params.toString();
+}
+
+async function loadAuditLog() {
+  const data = await api('/audit?' + auditQuery(1000));
+  auditCondition = auditQuery(5000);
+
+  // ユーザーIDの入力候補（表示中の記録に出てくるID）
+  const names = [...new Set(data.rows.map(r => r.user).filter(u => u != null))].sort();
+  document.getElementById('audit-user-list').innerHTML = names.map(n => `<option value="${esc(n)}">`).join('');
+
+  const failed = data.writer && data.writer.failedCount > 0;
+  document.getElementById('audit-status').innerHTML = `
+    ${failed ? `<div class="audit-warning">サーバーの起動後、操作ログに書き込めなかった記録が ${esc(data.writer.failedCount)} 件あります
+      （最後のエラー: ${esc(data.writer.lastError?.at)} ${esc(data.writer.lastError?.message)}）。
+      サーバーのディスクの空き容量と、保存先フォルダ（${esc(data.writer.dir)}）の権限を確認してください。</div>` : ''}
+    <p class="audit-count">${esc(data.from)} 〜 ${esc(data.to)}：${esc(data.total.toLocaleString())} 件${
+      data.truncated ? `（新しい ${esc(data.rows.length.toLocaleString())} 件を表示しています。期間や条件を絞ると、残りを確認できます）` : ''}</p>`;
+
+  const rows = data.rows.map(row => `
+    <tr class="${Number(row.status) >= 400 ? 'audit-denied' : ''}">
+      <td>${esc(auditTime(row))}</td>
+      <td>${esc(auditUser(row))}</td>
+      <td>${esc(row.ip ?? '')}</td>
+      <td>${esc(AUDIT_ACTIONS[row.action] ?? row.action)}</td>
+      <td>${esc(auditTarget(row))}</td>
+      <td>${esc(auditResult(row))}</td>
+      <td class="audit-detail">${esc(auditDetail(row))}</td>
+    </tr>`).join('');
+
+  document.getElementById('audit-table').innerHTML = data.rows.length ? `
+    <div class="audit-wrap">
+      <table class="master-table audit-table">
+        <thead><tr><th>日時</th><th>ユーザー</th><th>接続元</th><th>操作</th><th>対象</th><th>結果</th><th>内容</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>` : '<p class="no-patient">この条件に合う記録はありません</p>';
+}
+
+// CSV の1項目。= + - @ で始まる値は、表計算ソフトで数式として実行されないよう先頭に ' を付ける
+// （ログイン失敗の記録には、だれかが入力した文字列がそのまま入っているため）
+function csvCell(value) {
+  let text = value == null ? '' : String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+// 表示中の条件に合う記録を CSV で保存する（最大 5,000 件。Excel で開ける形式）
+async function downloadAuditCsv() {
+  const data = await api('/audit?' + (auditCondition || auditQuery(5000)));
+  const header = ['日時', 'ユーザーID', 'ロール', '接続元', '操作', '対象の患者', '患者ID', '対象ID', '結果', '内容', '操作の種類', '状態コード'];
+  const lines = data.rows.map(row => [
+    auditTime(row), row.user ?? '', row.role ? roleName(row.role) : '', row.ip ?? '',
+    AUDIT_ACTIONS[row.action] ?? row.action, row.patient_name ?? '', row.patient_id ?? '', row.target ?? '',
+    auditResult(row), auditDetail(row), row.action ?? '', row.status ?? '',
+  ].map(csvCell).join(','));
+  const csv = '﻿' + [header.map(csvCell).join(','), ...lines].join('\r\n') + '\r\n';
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `sousa-log_${data.from}_${data.to}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast(`${data.rows.length.toLocaleString()} 件を CSV に保存しました` + (data.truncated ? '（条件に合う記録の一部です）' : ''));
 }
 
 // ============================================================
