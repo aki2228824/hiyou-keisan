@@ -1,0 +1,38 @@
+<!--
+  WinSW v2.12.0 configuration for the hiyou-keisan web app.
+  Put this file next to the renamed WinSW executable:
+      C:\hiyou\service\hiyou-service.exe
+      C:\hiyou\service\hiyou-service.xml   (same base name)
+  Keep this file ASCII-only (no Japanese text) to avoid encoding problems.
+-->
+<service>
+  <!-- Windows service name (used by Get-Service / Restart-Service) -->
+  <id>hiyoukeisan</id>
+  <!-- Display name shown in services.msc -->
+  <name>Hiyou Keisan (Node.js)</name>
+  <description>Hiyou-keisan web app (Node.js + Express, port from C:\hiyou\app\.env). Single instance only - do not start a second copy against the same database file.</description>
+
+  <!-- What to run. Absolute path: the service account does not share your PATH. -->
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>C:\hiyou\app\server\index.js</arguments>
+
+  <!-- MUST be the project root: .env (dotenv) and .puppeteerrc.cjs (Puppeteer) are looked up from the working directory. -->
+  <workingdirectory>C:\hiyou\app</workingdirectory>
+
+  <!-- Start at boot, before anyone logs on. -->
+  <startmode>Automatic</startmode>
+
+  <!-- If node.exe exits with a non-zero code (crash / killed), Windows restarts the service after 10 seconds, every time. -->
+  <onfailure action="restart" delay="10 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <!-- On stop: send Ctrl+C, wait up to 15 seconds, then kill. -->
+  <stoptimeout>15 sec</stoptimeout>
+
+  <!-- stdout -> hiyou-service.out.log, stderr -> hiyou-service.err.log, wrapper -> hiyou-service.wrapper.log -->
+  <logpath>C:\hiyou\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+</service>

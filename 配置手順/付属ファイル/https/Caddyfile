@@ -1,0 +1,15 @@
+{
+	storage file_system C:/caddy/data
+	skip_install_trust
+}
+
+https://192.168.1.10 {
+	tls internal
+	reverse_proxy 127.0.0.1:3000
+	log {
+		output file C:/caddy/logs/access.log {
+			roll_size 10mb
+			roll_keep 30
+		}
+	}
+}

@@ -1,0 +1,4 @@
+subjectAltName=IP:192.168.1.20,DNS:nas01
+extendedKeyUsage=serverAuth
+keyUsage=critical,digitalSignature,keyEncipherment
+basicConstraints=CA:FALSE

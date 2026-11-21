@@ -1,0 +1,23 @@
+services:
+  hiyou-keisan:
+    build: .
+    image: hiyou-keisan:local
+    container_name: hiyou-keisan
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Tokyo
+      PORT: "3000"
+      DB_PATH: /app/data/hiyou.db
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    shm_size: "256m"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
