@@ -269,7 +269,8 @@ $env:DB_PATH='C:\temp\restore-test\hiyou.db'; $env:EXPORT_ENABLED='false'; $env:
 - コンテナには `tools/` のスクリプトを入れていない。初期パスワードが残っていないかの確認は、バックアップした DB を開発 PC にコピーして `node tools\check-default-password.js <コピーしたDBのパス>` で行う。
 - 週次レポート（月曜 6:00）は、その時刻に NAS が起動していて、コンテナから `https://api.dify.ai` へ出られることが条件。出られない構成なら `.env` で `EXPORT_ENABLED=false`。結果は `data/export.log`。
 - 通信は、何も設定しなければ HTTP（暗号化なし）。LAN 内限定の前提で、対策は [2_運用編.md](2_運用編.md) の 3章・4章を参照。HTTPS にする場合は NAS 内蔵のリバースプロキシを使い、`.env` に `TRUST_PROXY=1` を足す（2編 3-3。アプリ側の対応は 2026-11-21 に適用済み）。
-- パスワードの基準（13 文字以上・英数字混在）、ログイン失敗時のロック（5 回で 15 分）、操作ログは Windows の場合と同じ（2編 8章）。操作ログは `data/audit/audit-YYYY-MM.jsonl` に入る。
+- パスワードの基準（13 文字以上・英数字混在）、ログイン失敗時のロック（同じ接続元から 5 回で 15 分）、操作ログは Windows の場合と同じ（2編 8章）。操作ログは `data/audit/audit-YYYY-MM.jsonl` に入る。NAS 内蔵のリバースプロキシを使う場合は `TRUST_PROXY=1` を必ず書く（書かないと、全員が同じ接続元に見えるので、1 人の失敗で全員がロックされ、操作ログの接続元も区別できない）。
+- 管理者がパスワードを忘れたときの `tools/reset-password.js` は、コンテナには入っていない。コンテナを止め、`data/hiyou.db` を開発 PC へコピーして `DB_PATH` と `AUDIT_LOG_DIR` を指定して実行し、書き換わった `hiyou.db` を戻してから起動する（未テスト）。
 
 ## 11. 何を確かめ、何を確かめていないか
 

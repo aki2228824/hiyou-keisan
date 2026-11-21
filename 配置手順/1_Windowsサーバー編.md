@@ -57,7 +57,7 @@ C:\hiyou\backup   毎晩のバックアップ（daily / monthly。2_運用編の
 
 ### Step 0. 開発PCでの準備
 
-1. 開発PCの Node.js を 26 LTS に上げ、`npm ci` → `npm start` → ログイン → PDF 出力まで一度確認する。現在の v25.9.0 は 2026-06-01 でサポートが終わっており、本番と同じ系列にそろえる。**これが Node 26 での動作確認を兼ねる。** 2026-11-21 の依存ライブラリの更新で、Node.js は 22.12 以上が必須になった（それより古いと起動しない）。確認には `node tools\smoke-test.js`（ログイン・PDF・操作ログなど 48 項目。元の DB には書き込まない）が使える。
+1. 開発PCの Node.js を 26 LTS に上げ、`npm ci` → `npm start` → ログイン → PDF 出力まで一度確認する。現在の v25.9.0 は 2026-06-01 でサポートが終わっており、本番と同じ系列にそろえる。**これが Node 26 での動作確認を兼ねる。** 2026-11-21 の依存ライブラリの更新で、Node.js は 22.12 以上が必須になった（それより古いと起動しない）。確認には `node tools\smoke-test.js`（ログイン・PDF・ロック・操作ログなど 64 項目。元の DB には書き込まない）が使える。
 2. Chrome の置き場所の固定（`.puppeteerrc.cjs` の追加）は **対応済み**。2026-11-21 にリポジトリへ追加し、開発PCでも Chrome をプロジェクト内の `.cache` に入れ直して PDF 出力を確認した。別の PC で開発を続ける場合は、`git pull` のあとに一度 `npm ci`（または `npx.cmd puppeteer browsers install chrome`）を実行する。理由は §6。
 
 ### Step 1. サーバー機の下準備
@@ -166,6 +166,7 @@ Get-ChildItem C:\hiyou\app\.cache\puppeteer\chrome -Recurse -Filter chrome.exe |
 ```
 
 - 期待: `added 103 packages`（Chrome のダウンロードを含めて約 30 秒〜1 分）と `found 0 vulnerabilities`。最後の行で `C:\hiyou\app\.cache\puppeteer\chrome\win64-157.0.8103.78\chrome-win64\chrome.exe` が表示される（2026-11-21 の更新後の実測。更新前は 196 パッケージ・Chrome 127）。
+- **最後の行に chrome.exe の場所が表示されることを必ず確かめる。** Puppeteer 25 では、Chrome のダウンロードに失敗しても `npm ci` は成功したように終わる（更新前の版は、失敗として止まった）【実測】。何も表示されなければ `npx.cmd puppeteer browsers install chrome` を実行する。また、インターネットへ出るのにプロキシが必要なネットワークでは、Puppeteer 25 はプロキシの設定（`HTTPS_PROXY` など）を使わずに取得しようとして失敗する【実測】。その場合は、プロキシなしで出られる場所で取得した `C:\hiyou\app\.cache\puppeteer` フォルダを、同じ場所へコピーする。Chrome が無いまま起動すると、起動時のログに「請求書PDF用の Chrome が見つかりません」と出る（PDF 以外は使える）。
 - `npm warn EBADENGINE` が出たら Node.js が古い（22.12 以上が必要）。Step 2 をやり直す。
 - 後日 `vulnerabilities` の指摘が出るようになっても、サーバー上で `npm audit fix` は実行しない（開発PCで更新し、PDF まで確認してから push する。[2_運用編.md](2_運用編.md) の 5章の 8）。
 - `npm ci` は registry.npmjs.org と Chrome の配布元へ HTTPS で出られる必要がある。Chrome だけ失敗したときは `npx.cmd puppeteer browsers install chrome` で取り直せる（実測 26 秒）。
@@ -331,7 +332,7 @@ Get-Content C:\hiyou\logs\hiyou-service.out.log -Tail 5 -Encoding UTF8
 ```
 
 - `npm ci` は node_modules を作り直すので、必ずサービスを止めてから実行する。Chrome は `.cache` に残るので再ダウンロードされない（実測 27 秒）。puppeteer のバージョンを上げたときだけ、新しい Chrome が自動で入る。
-- **2026-11-21 の更新（Puppeteer 25）を、それより前の版が入っているサーバーへ取り込むとき:** (1) 先に `node -v` が v22.12 以上であることを確かめる（古ければ Node.js を先に更新する）。(2) `npm.cmd ci --omit=dev` で新しい Chrome（157）が入る（インターネットへ出られること）。(3) 起動して PDF を 1 枚出して確かめたあと、残っている古い Chrome のフォルダ（約 320MB）を消す: `Remove-Item -Recurse -Force C:\hiyou\app\.cache\puppeteer\chrome\win64-127.0.6533.88`（消しても PDF を出力できることは確認済み）。(4) 初回の起動で `C:\hiyou\data\audit` が作られ、操作ログの記録が始まる。
+- **2026-11-21 の更新（Puppeteer 25）を、それより前の版が入っているサーバーへ取り込むとき:** (1) 先に `node -v` が v22.12 以上であることを確かめる（古ければ Node.js を先に更新する）。(2) `npm.cmd ci --omit=dev` で新しい Chrome（157）が入る（インターネットへ出られること）。(3) `Get-ChildItem C:\hiyou\app\.cache\puppeteer\chrome -Recurse -Filter chrome.exe | Select-Object FullName` で `win64-157…` の chrome.exe があることを確かめる（Step 4 の注意のとおり、取得に失敗しても npm ci は成功したように見える）。起動して PDF を 1 枚出して確かめる。残っている古い Chrome のフォルダ（約 320MB）は、**更新前の版へ戻す可能性が無くなってから**消す: `Remove-Item -Recurse -Force C:\hiyou\app\.cache\puppeteer\chrome\win64-127.0.6533.88`（消しても PDF を出力できることは確認済み。戻すときの `npm ci` は、古い Chrome が残っていないと取り直しに行き、失敗すると node_modules が空になる【実測】）。(4) 初回の起動で `C:\hiyou\data\audit` が作られ、操作ログの記録が始まる。
 - zip 方式（B）の場合は、`git pull` の代わりに `Expand-Archive -Force` で上書きする。
 - `git clean` は使わない（.env と .cache が消える）。
 - .env を変えたとき: `Restart-Service hiyoukeisan`
@@ -420,9 +421,12 @@ WinSW を選んだ理由: 再起動の仕組みが Windows 標準のサービス
 | ログに `初期管理者を作成しました` | 空の DB で起動している。.env を読めていない（`injected env (0)`、`.env.txt` になっている）か、DB_PATH の誤り |
 | 開始直後に止まり、ログに `操作ログの初期化エラー` | 操作ログの保存先（既定は DB と同じフォルダの `audit`。.env で `AUDIT_LOG_DIR` を書いた場合はその場所）を作成できない・書き込めない。場所の書き間違いと、フォルダの権限（Step 3）を確認する。記録なしで動き続けないよう、アプリは起動を止める |
 | 開始直後に止まり、ログに `TRUST_PROXY の値が正しくありません` | .env の `TRUST_PROXY` の書き間違い。`loopback`（同じ機械の Caddy）か `1`（NAS 内蔵のプロキシ）にする。`true` は使えない |
-| 開始直後に止まり、ログに `ERR_REQUIRE_ESM` や `require() of ES Module` | Node.js が 22.12 より古い（未検証。古い Node.js はこの PC で実行できないため、公式の仕様に基づく記述）。Step 2 で 26 LTS を入れ直す |
+| 開始直後に止まり、ログに `このアプリには Node.js 22.12 以上が必要です` | Node.js が古い（表示は未検証。古い Node.js はこの PC で実行できないため、コードに基づく記述）。Step 2 で 26 LTS を入れ直す |
+| 開始直後に止まり、ログに `プログラムの読み込みエラー` | プログラムの一部を読み込めない。`npm.cmd ci --omit=dev` が途中で終わっている、またはファイルが欠けている。Step 4 の「共通」をやり直す（DB の問題ではない） |
+| 起動時のログに `請求書PDF用の Chrome が見つかりません`（起動はする） | Chrome のダウンロードに失敗している。`cd C:\hiyou\app; npx.cmd puppeteer browsers install chrome`（Step 4 の注意を参照） |
 | ログインすると画面の上部に「パスワードの基準を満たしていません」 | 初期パスワード（admin123）や、基準ができる前に決めたパスワードのまま。管理者がマスタ管理 → ユーザー管理で変更する |
-| 「このユーザーIDは…一時的にロックされています」と出てログインできない | パスワードを 5 回続けて間違えた。15 分待つか、管理者がマスタ管理 → ユーザー管理の「ロック解除」を押す。管理者自身がロックされて急ぐときは `Restart-Service hiyoukeisan`（全員ログアウトになる） |
+| 「このユーザーIDは…一時的にロックされています」と出てログインできない | そのPCから、パスワードを 5 回続けて間違えた（ほかのPCからはログインできる）。15 分待つか、管理者がマスタ管理 → ユーザー管理の「ロック解除」を押す。管理者自身がロックされて急ぐときは `Restart-Service hiyoukeisan`（全員ログアウトになる）。くわしくは [2_運用編.md](2_運用編.md) の 8-2 |
+| 管理者のパスワードが分からなくなった | サーバー機で `tools\reset-password.js` を使って設定し直す（アプリを止めてから実行する。[2_運用編.md](2_運用編.md) の 8-2） |
 | `git pull` で `detected dubious ownership` | 管理者 PowerShell で実行しているか確認する。それでも出れば `git config --global --add safe.directory C:/hiyou/app` |
 | exe が「スマート アプリ コントロール」で止められる | WinSW と Puppeteer の Chrome はどちらも未署名（確認済み）。この機能がオンの新品 Windows 11 では止められる可能性がある（未検証） |
 
