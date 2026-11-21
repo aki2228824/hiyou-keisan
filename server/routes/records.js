@@ -98,31 +98,35 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   if (rows.some(r => !itemIds.has(r.item_id)))
     return res.status(400).json({ error: '登録されていない物品が含まれています' });
 
-  for (const { item_id, quantity } of rows) {
-    if (quantity > 0) {
-      db.run(`
-        INSERT INTO records (patient_id, record_date, item_id, quantity) VALUES (?,?,?,?)
-        ON CONFLICT(patient_id, record_date, item_id) DO UPDATE SET quantity=excluded.quantity
-      `, [pid, record_date, item_id, quantity]);
-    } else {
-      db.run('DELETE FROM records WHERE patient_id=? AND record_date=? AND item_id=?',
-        [pid, record_date, item_id]);
+  // 1日分（物品の全行＋食事）をひとまとまりで確定し、ファイルへの保存は最後の1回だけにする。
+  // （以前は1行ごとにDB全体を書き出していたため、DBが大きくなると保存が極端に遅くなっていた）
+  db.transaction(() => {
+    for (const { item_id, quantity } of rows) {
+      if (quantity > 0) {
+        db.run(`
+          INSERT INTO records (patient_id, record_date, item_id, quantity) VALUES (?,?,?,?)
+          ON CONFLICT(patient_id, record_date, item_id) DO UPDATE SET quantity=excluded.quantity
+        `, [pid, record_date, item_id, quantity]);
+      } else {
+        db.run('DELETE FROM records WHERE patient_id=? AND record_date=? AND item_id=?',
+          [pid, record_date, item_id]);
+      }
     }
-  }
 
-  if (mealRow) {
-    db.run(`
-      INSERT INTO meal_records
-        (patient_id, record_date, breakfast, lunch, dinner,
-         service_status, hospital_addition, hospital_special)
-      VALUES (?,?,?,?,?,?,?,?)
-      ON CONFLICT(patient_id, record_date) DO UPDATE SET
-        breakfast=excluded.breakfast, lunch=excluded.lunch, dinner=excluded.dinner,
-        service_status=excluded.service_status,
-        hospital_addition=excluded.hospital_addition,
-        hospital_special=excluded.hospital_special
-    `, [pid, record_date, ...mealRow]);
-  }
+    if (mealRow) {
+      db.run(`
+        INSERT INTO meal_records
+          (patient_id, record_date, breakfast, lunch, dinner,
+           service_status, hospital_addition, hospital_special)
+        VALUES (?,?,?,?,?,?,?,?)
+        ON CONFLICT(patient_id, record_date) DO UPDATE SET
+          breakfast=excluded.breakfast, lunch=excluded.lunch, dinner=excluded.dinner,
+          service_status=excluded.service_status,
+          hospital_addition=excluded.hospital_addition,
+          hospital_special=excluded.hospital_special
+      `, [pid, record_date, ...mealRow]);
+    }
+  });
 
   res.json({ ok: true });
 });

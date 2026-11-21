@@ -7,8 +7,12 @@ const DB_PATH = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
   : path.join(__dirname, '..', 'data', 'hiyou.db');
 
+// 保存時の一時ファイル。DBと同じフォルダに置く（同じディスク内でないと rename で差し替えられないため）
+const TMP_PATH = DB_PATH + '.tmp';
+
 let db;
 let initialAdminCreated = false; // 今回の起動で初期管理者を作成したか
+let inTransaction = false;       // transaction() の実行中か（実行中は run() ごとの保存をしない）
 
 async function getDb() {
   if (db) return db;
@@ -18,9 +22,20 @@ async function getDb() {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
   if (fs.existsSync(DB_PATH)) {
-    db = new SQL.Database(fs.readFileSync(DB_PATH));
+    const file = fs.readFileSync(DB_PATH);
+    // 0バイトのファイルは sql.js では「空の新規DB」として開けてしまい、そのまま空のDBで上書きされる。
+    // 保存中の停電・ディスク満杯などで壊れた可能性が高いので、上書きせずに起動を止める。
+    if (file.length === 0) {
+      throw new Error(
+        `DBファイルが0バイトです（破損の可能性があります）: ${DB_PATH}\n` +
+        'このファイルは上書きしていません。バックアップから戻してから起動し直してください。' +
+        '本当に空の状態から始める場合だけ、このファイルを別の場所へ移動してから起動してください。');
+    }
+    db = new SQL.Database(file);
+    console.log(`DBファイル: ${DB_PATH}（${file.length.toLocaleString()} バイト）`);
   } else {
     db = new SQL.Database();
+    console.log(`DBファイル: ${DB_PATH}（見つからないため新しく作成します）`);
   }
 
   initSchema();
@@ -28,9 +43,38 @@ async function getDb() {
   return db;
 }
 
+/**
+ * メモリ上のDB全体をファイルへ書き出す。
+ * DBファイルを直接上書きすると、書き込み途中の停電・異常終了・ディスク満杯でファイルが
+ * 0バイトや途中までの状態になる。そのため一時ファイルへ全部書いてディスクへ確定（fsync）させてから、
+ * rename で差し替える。DBファイルは常に「保存前の内容」か「保存後の内容」のどちらかになる。
+ */
 function save() {
   const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
+  const fd = fs.openSync(TMP_PATH, 'w');
+  try {
+    let offset = 0;
+    while (offset < data.length) offset += fs.writeSync(fd, data, offset, data.length - offset);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  renameWithRetry(TMP_PATH, DB_PATH);
+}
+
+// Windows では、ほかのプログラム（バックアップ・ウイルス対策・エクスプローラーでのコピー等）が
+// DBファイルを開いている間は rename が EPERM / EBUSY / EACCES で失敗する。
+// 短い待ちを入れて再試行する（50ミリ秒 × 最大40回 ＝ 約2秒。それでも駄目ならエラーにする）。
+function renameWithRetry(from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      if (attempt > 40 || !['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 同期的に50ミリ秒待つ
+    }
+  }
 }
 
 function initSchema() {
@@ -184,11 +228,37 @@ function query(sql, params = []) {
 
 function run(sql, params = []) {
   db.run(sql, params);
+  if (!inTransaction) save(); // transaction() の中では、最後にまとめて1回だけ保存する
+}
+
+/**
+ * 複数の更新を「全部成功」か「全部取り消し」のひとまとまりで実行し、
+ * 成功したら最後に1回だけファイルへ保存する（run() 1回ごとにDB全体を書き出さない）。
+ * fn の中は同期処理だけにすること（await を挟むと、ほかのリクエストの更新が混ざる）。
+ */
+function transaction(fn) {
+  if (inTransaction) return fn(); // 入れ子で呼ばれたら外側のまとまりに合流する
+
+  db.run('BEGIN');
+  inTransaction = true;
+  let result;
+  try {
+    result = fn();
+    if (result && typeof result.then === 'function')
+      throw new Error('transaction() の中では非同期処理（async / Promise）は使えません');
+    db.run('COMMIT');
+  } catch (err) {
+    try { db.run('ROLLBACK'); } catch (_) { /* 取り消し済みなら何もしない */ }
+    throw err;
+  } finally {
+    inTransaction = false;
+  }
   save();
+  return result;
 }
 
 function wasInitialAdminCreated() {
   return initialAdminCreated;
 }
 
-module.exports = { getDb, query, run, save, wasInitialAdminCreated };
+module.exports = { getDb, query, run, save, transaction, wasInitialAdminCreated };
