@@ -15,15 +15,16 @@
 **検証できたこと**（開発PC: Windows 11 Pro / Node 25.9.0 / 管理者権限なし。ポート 3141、作業用コピーとテスト用 DB）
 
 - `git archive` の zip → 展開 → `.puppeteerrc.cjs` 追加 → `.env`（BOM 付き UTF-8）→ 別アカウントを模した環境（USERPROFILE / APPDATA / TEMP を別フォルダに変更）で起動 → ログインと PDF 出力（HTTP 200、3〜5 秒）
-- `npm ci --omit=dev`（約 1 分、196 パッケージ、Chrome がプロジェクト内 `.cache` に入る）と 2 回目（27 秒、Chrome の再ダウンロードなし）
+- `npm ci --omit=dev`（約 1 分、196 パッケージ、Chrome がプロジェクト内 `.cache` に入る）と 2 回目（27 秒、Chrome の再ダウンロードなし）。これは 2026-11-20、依存ライブラリを更新する前の実測（更新後の値は下の「依存ライブラリの更新後」の行）
 - 全インターフェースで待ち受けていること（`::`）、LAN 側 IP でも HTTP 200
 - 強制終了時の終了コード（`taskkill /F` → 1）、二重起動は 2 つ目が `EADDRINUSE` で終了すること
 - フォルダ権限コマンド（icacls）、ファイアウォールのコマンド（`-WhatIf` のみ）、本書の PowerShell コマンドの構文とパラメーター名
 - （2026-11-21 追加）修正後のコードで、ホームフォルダに Chrome が無い別アカウント相当・プロジェクト外の作業フォルダから起動し、`.env` の読み込み・ログイン・保存・PDF 出力（HTTP 200、約 3 秒）ができること
+- （2026-11-21 追加・依存ライブラリの更新後）Puppeteer 25.18.1 / Chrome 157 で、クリーンな複製での `npm ci --omit=dev`（103 パッケージ、約 32 秒、警告なし、脆弱性の指摘 0 件）→ 上と同じ別アカウント相当の起動 → ログインと PDF 出力（HTTP 200、約 3 秒）。PDF の内容が更新前と同じであること（[動作検証.md](../動作検証.md) の S-03）
 
 **検証できていないこと**（サーバー機での確認手順を本文に入れてある）
 
-- **Node 26 での起動。** 依存パッケージの engines 要件（最も厳しいのは node-cron 4.6.0 の `>=20`）と、Node 26.0.0 で削除された API を使っていないことの確認まで。ダウンロードした Node 26 をこの PC で実行する操作は権限設定で拒否されたため未実施 → Step 0 で開発PCを Node 26 にして一度動かす
+- **Node 26 での起動。** 依存パッケージの engines 要件（最も厳しいのは puppeteer 25.18.1 の `>=22.12.0`）と、Node 26.0.0 で削除された API を使っていないことの確認まで。開発PCの Node 25.9.0 では、更新後のコードが全テストに合格している。ダウンロードした Node 26 をこの PC で実行する操作は権限設定で拒否されたため未実施 → Step 0 で開発PCを Node 26 にして一度動かす
 - **サービス登録そのもの**（WinSW の実行、起動時の自動開始、異常終了後の再起動）。この PC では管理者権限がなく登録も禁止のため、WinSW v2.12.0 の公式ドキュメントとソースを読んで手順化した
 - **LocalSystem（サービス用のセッション）での Chrome 起動** → Step 7 の確認 4 で必ず PDF を 1 枚出す
 - 別端末からの接続とホスト名での名前解決（この PC 1 台しかないため）
@@ -33,8 +34,8 @@
 | 項目 | 目安 | 根拠 |
 |---|---|---|
 | OS | Windows 11 Pro 64bit、または Windows Server 2019 / 2022 / 2025 | Node 26 の対象は 64bit の Windows 10 / Server 2016 以降。Home でも動くが、保守（リモートデスクトップ、更新の制御）は Pro が楽 |
-| CPU / メモリ | 2 コア以上 / 8GB（最低 4GB） | 実測: node.exe 待機時 約 82MB。PDF 出力中は Chrome が 8 プロセス合計で最大 約 410MB、1 枚 3〜5 秒 |
-| ディスク | SSD、空き 5GB 以上 | 実測: Chrome 541MB + node_modules 63MB。DB は現在 64KB。ログは最大 約 180MB |
+| CPU / メモリ | 2 コア以上 / 8GB（最低 4GB） | 実測（2026-11-21、Chrome 157）: node.exe 待機時 約 85MB。PDF 出力中は Chrome が 8〜9 プロセスで、各プロセスの専有メモリの合計は最大 約 260MB（ワーキングセットを単純に足すと約 2.3GB になるが、プロセス間で共有している領域を重ねて数えた値）。1 枚 3〜4 秒 |
+| ディスク | SSD、空き 5GB 以上 | 実測（ファイルの大きさの合計）: Chrome 442MB + node_modules 59MB。DB は現在 64KB。サービスのログは最大 約 180MB。操作ログは使った分だけ増える（[2_運用編.md](2_運用編.md) の 8章） |
 | ネットワーク | 有線 LAN、IP 固定（DHCP 予約） | Wi-Fi のノート PC は蓋・省電力・再接続で止まりやすい |
 
 - 数年前の事務用 PC やミニ PC で足りる。3〜10 人の利用で CPU を使うのは PDF 出力のときだけ。
@@ -56,7 +57,7 @@ C:\hiyou\backup   毎晩のバックアップ（daily / monthly。2_運用編の
 
 ### Step 0. 開発PCでの準備
 
-1. 開発PCの Node.js を 26 LTS に上げ、`npm ci` → `npm start` → ログイン → PDF 出力まで一度確認する。現在の v25.9.0 は 2026-06-01 でサポートが終わっており、本番と同じ系列にそろえる。**これが Node 26 での動作確認を兼ねる。**
+1. 開発PCの Node.js を 26 LTS に上げ、`npm ci` → `npm start` → ログイン → PDF 出力まで一度確認する。現在の v25.9.0 は 2026-06-01 でサポートが終わっており、本番と同じ系列にそろえる。**これが Node 26 での動作確認を兼ねる。** 2026-11-21 の依存ライブラリの更新で、Node.js は 22.12 以上が必須になった（それより古いと起動しない）。確認には `node tools\smoke-test.js`（ログイン・PDF・操作ログなど 48 項目。元の DB には書き込まない）が使える。
 2. Chrome の置き場所の固定（`.puppeteerrc.cjs` の追加）は **対応済み**。2026-11-21 にリポジトリへ追加し、開発PCでも Chrome をプロジェクト内の `.cache` に入れ直して PDF 出力を確認した。別の PC で開発を続ける場合は、`git pull` のあとに一度 `npm ci`（または `npx.cmd puppeteer browsers install chrome`）を実行する。理由は §6。
 
 ### Step 1. サーバー機の下準備
@@ -164,8 +165,9 @@ npm.cmd ci --omit=dev
 Get-ChildItem C:\hiyou\app\.cache\puppeteer\chrome -Recurse -Filter chrome.exe | Select-Object FullName
 ```
 
-- 期待: `added 196 packages`（約 1 分）。最後の行で `C:\hiyou\app\.cache\puppeteer\chrome\win64-127.0.6533.88\chrome-win64\chrome.exe` が表示される。
-- `npm warn deprecated puppeteer@22.15.0` と `16 vulnerabilities` が出るが、サーバー上で `npm audit fix --force` は実行しない（puppeteer のメジャー更新になる。対応は開発側の課題）。
+- 期待: `added 103 packages`（Chrome のダウンロードを含めて約 30 秒〜1 分）と `found 0 vulnerabilities`。最後の行で `C:\hiyou\app\.cache\puppeteer\chrome\win64-157.0.8103.78\chrome-win64\chrome.exe` が表示される（2026-11-21 の更新後の実測。更新前は 196 パッケージ・Chrome 127）。
+- `npm warn EBADENGINE` が出たら Node.js が古い（22.12 以上が必要）。Step 2 をやり直す。
+- 後日 `vulnerabilities` の指摘が出るようになっても、サーバー上で `npm audit fix` は実行しない（開発PCで更新し、PDF まで確認してから push する。[2_運用編.md](2_運用編.md) の 5章の 8）。
 - `npm ci` は registry.npmjs.org と Chrome の配布元へ HTTPS で出られる必要がある。Chrome だけ失敗したときは `npx.cmd puppeteer browsers install chrome` で取り直せる（実測 26 秒）。
 
 ### Step 5. .env と DB を引っ越す
@@ -183,6 +185,7 @@ notepad C:\hiyou\app\.env
    - `PORT=3000`
    - `DB_PATH=C:/hiyou/data/hiyou.db`（区切りは `/`。テンプレートでは行頭に # が付いているので、# を外す。`PORT` の行も同じく # を外す）
    - 開発PCの現在の .env には SESSION_SECRET / PORT / DB_PATH の 3 つが無いので、必ず追加する。完成形の例は `C:\hiyou\app\配置手順\付属ファイル\windows\env.server.example`。
+   - テンプレートの末尾にある `TRUST_PROXY` / `HOST`（HTTPS にするとき）、`PASSWORD_MIN_LENGTH` / `LOGIN_MAX_FAILURES` / `LOGIN_LOCK_MINUTES`（パスワードの文字数、ロックまでの回数と時間）、`AUDIT_LOG_DIR`（操作ログの保存先）は任意。# を付けたままなら既定値（13 文字・5 回・15 分・`C:\hiyou\data\audit`）で動く。
 
 2. **DB**: 開発PCでアプリを止めてから（保存途中のファイルを持ち出さないため）`data\hiyou.db` を USB メモリ等でサーバーの `C:\hiyou\data\hiyou.db` に置く。USB 側は消す。
 
@@ -205,13 +208,14 @@ node server\index.js
 ```
 ◇ injected env (9) from .env // tip: ...          ← dotenv の案内。( ) 内は読み込んだ変数の数。0 なら .env を読めていない
 DBファイル: C:\hiyou\data\hiyou.db（65,536 バイト）   ← DB_PATH の場所か確認する。新規のときは「見つからないため新しく作成します」と出る
+操作ログ: C:\hiyou\data\audit                        ← 操作ログの保存先（DB と同じフォルダの audit。無ければ自動で作られる）
 週次使用量レポート: cron登録 (0 6 * * 1 / Asia/Tokyo)
 療養介護サービス提供実績記録票 起動: http://localhost:3000
 ```
 
 - **`初期管理者を作成しました: admin / admin123` が出たら、DB を引き継いだつもりなのに空の DB が新規作成されている**（DB_PATH の書き間違い、または .env を読めていない）。止めて直す。
 - 「Windows セキュリティの重要な警告（Node.js JavaScript Runtime）」が出ることがある。どちらを押してもよい（自動で作られる規則は Step 8 で消す）。
-- サーバー機のブラウザーで `http://localhost:3000` → ログイン → 月次集計 → PDF を 1 枚出す。空の DB から始めた場合は患者が 1 人もいないので、先にマスタ管理 → 患者管理でテスト用の患者を 1 名登録してから出す（Step 7 の確認 4 と Step 9 でも使い、確認がすべて終わったら削除する）。
+- サーバー機のブラウザーで `http://localhost:3000` → ログイン → 月次集計 → PDF を 1 枚出す。初期パスワード（admin123）でログインすると、画面の上部に「パスワードの基準を満たしていません」という注意が出る（正常。Step 8 の前にパスワードを変える。新しいパスワードは 13 文字以上で、英字と数字の両方が必要）。空の DB から始めた場合は患者が 1 人もいないので、先にマスタ管理 → 患者管理でテスト用の患者を 1 名登録してから出す（Step 7 の確認 4 と Step 9 でも使い、確認がすべて終わったら削除する）。
 - 確認できたら **Ctrl+C で必ず止める**（動かしたまま次へ進むと、サービス側がポート重複で落ち続ける）。
 
 ### Step 7. Windows サービスにする（WinSW v2.12.0）
@@ -243,7 +247,7 @@ Get-Service hiyoukeisan | Format-List Name, DisplayName, Status, StartType     #
 sc.exe qfailure hiyoukeisan     # RESET_PERIOD (in seconds) : 3600 / FAILURE_ACTIONS : RESTART -- Delay = 10000 milliseconds.
 
 # 2. ログと待ち受け
-Get-Content C:\hiyou\logs\hiyou-service.out.log -Tail 20 -Encoding UTF8        # Step 6 と同じ 4 行
+Get-Content C:\hiyou\logs\hiyou-service.out.log -Tail 20 -Encoding UTF8        # Step 6 と同じ 5 行（「操作ログ: C:\hiyou\data\audit」を含む）
 Get-NetTCPConnection -LocalPort 3000 -State Listen | Format-Table LocalAddress, LocalPort, OwningProcess
 #    LocalAddress が :: なら全インターフェース（IPv4 も含む）で待ち受けている。127.0.0.1 だけなら LAN から届かない
 
@@ -308,6 +312,7 @@ Test-NetConnection 192.168.1.10 -Port 3000      # TcpTestSucceeded : True
 | `C:\hiyou\logs\hiyou-service.err.log` | アプリのエラー（`PDF生成に失敗しました`、`サーバーエラー` など） |
 | `C:\hiyou\logs\hiyou-service.wrapper.log` | WinSW 自身の記録（開始・停止・子プロセスの終了コード） |
 | `C:\hiyou\app\data\export.log` | 週次レポートの送信結果。DB_PATH を変えても場所は変わらない（コードで固定） |
+| `C:\hiyou\data\audit\audit-YYYY-MM.jsonl` | 操作ログ（ログイン、患者の情報の表示・出力、登録・変更・削除の記録。1 か月 1 ファイル）。画面のマスタ管理 → 操作ログ で見る。場所は DB と同じフォルダの `audit`（.env の `AUDIT_LOG_DIR` で変更可）。運用は [2_運用編.md](2_運用編.md) の 8章 |
 | イベント ビューアー → Windows ログ → システム（ソース: Service Control Manager） | サービスの異常終了と再起動の記録 |
 
 - out / err は 10MB で切り替わり、8 世代まで残る（新しい順に `hiyou-service.0.out.log` 〜 `hiyou-service.7.out.log`）。
@@ -326,6 +331,7 @@ Get-Content C:\hiyou\logs\hiyou-service.out.log -Tail 5 -Encoding UTF8
 ```
 
 - `npm ci` は node_modules を作り直すので、必ずサービスを止めてから実行する。Chrome は `.cache` に残るので再ダウンロードされない（実測 27 秒）。puppeteer のバージョンを上げたときだけ、新しい Chrome が自動で入る。
+- **2026-11-21 の更新（Puppeteer 25）を、それより前の版が入っているサーバーへ取り込むとき:** (1) 先に `node -v` が v22.12 以上であることを確かめる（古ければ Node.js を先に更新する）。(2) `npm.cmd ci --omit=dev` で新しい Chrome（157）が入る（インターネットへ出られること）。(3) 起動して PDF を 1 枚出して確かめたあと、残っている古い Chrome のフォルダ（約 320MB）を消す: `Remove-Item -Recurse -Force C:\hiyou\app\.cache\puppeteer\chrome\win64-127.0.6533.88`（消しても PDF を出力できることは確認済み）。(4) 初回の起動で `C:\hiyou\data\audit` が作られ、操作ログの記録が始まる。
 - zip 方式（B）の場合は、`git pull` の代わりに `Expand-Archive -Force` で上書きする。
 - `git clean` は使わない（.env と .cache が消える）。
 - .env を変えたとき: `Restart-Service hiyoukeisan`
@@ -363,10 +369,11 @@ WinSW を選んだ理由: 再起動の仕組みが Windows 標準のサービス
 
 **仕組み（node_modules を読んで確認）**
 
-- puppeteer 22.15.0 は Chrome 127.0.6533.88 を `npm ci` の postinstall でダウンロードする。保存先は次の優先順で決まる（`node_modules/puppeteer/lib/cjs/puppeteer/getConfiguration.js` 108〜113 行）:
+- puppeteer 25.18.1 は Chrome 157.0.8103.78 を `npm ci` の postinstall でダウンロードする（2026-11-21 の更新前は puppeteer 22.15.0 / Chrome 127.0.6533.88）。保存先は次の優先順で決まる（`node_modules/puppeteer/lib/puppeteer/getConfiguration.js` 123〜126 行）:
   環境変数 `PUPPETEER_CACHE_DIR` → 設定ファイルの `cacheDirectory` → `<ホームフォルダ>\.cache\puppeteer`
+- Puppeteer 23 以降は、Chrome とは別に chrome-headless-shell（旧方式のヘッドレス専用版）もダウンロードする。このアプリは使わないので、`.puppeteerrc.cjs` で取得しない設定にしてある。
 - 既定のままだと、`npm ci` を実行したユーザーの `C:\Users\<ユーザー>\.cache\puppeteer` に入る。LocalSystem のホームは `C:\Windows\System32\config\systemprofile` なので、サービスからは見つからない。
-- 設定ファイル（`.puppeteerrc.cjs` など）は「プロセスの作業フォルダから上へ」探される（同 43〜45 行）。`server/index.js` の場所からではない。
+- 設定ファイル（`.puppeteerrc.cjs` など）は「プロセスの作業フォルダから上へ」探される（同 87〜103 行）。`server/index.js` の場所からではない。
 
 **実測（2026-11-20。ホームフォルダを別の場所に差し替えて別アカウントを再現し、PDF を 1 枚要求）**
 
@@ -378,6 +385,8 @@ WinSW を選んだ理由: 再起動の仕組みが Windows 標準のサービス
 | 環境変数 `PUPPETEER_CACHE_DIR`（プロセスの環境変数、または .env に記載） | 成功 |
 | `PUPPETEER_EXECUTABLE_PATH` でインストール済みの Edge 155 を指定 | 起動失敗（`Failed to launch the browser process!`）。Edge のプロセスが残った |
 | `.cache` を消して `npx puppeteer browsers install chrome` | 26 秒で復旧し成功 |
+| （2026-11-21、puppeteer 25.18.1 に更新後）`.puppeteerrc.cjs` とサーバー側の環境変数指定のまま、作業フォルダはプロジェクトの外、ホームフォルダは空 | **成功**（HTTP 200、約 3 秒。ホームフォルダに Chrome のキャッシュは作られない） |
+| （同上）古い Chrome 127 のフォルダを削除 | 成功（Chrome 157 だけで PDF を出力できる） |
 
 **選択肢の比較**
 
@@ -409,6 +418,11 @@ WinSW を選んだ理由: 再起動の仕組みが Windows 標準のサービス
 | PDF の書体が違う・文字が欠ける | PDF は `MS Gothic` / `Meiryo` を指定している（server/routes/pdf.js）。英語版 Windows Server では日本語フォント（言語機能）を追加する |
 | サーバーでは開けるが、他の端末から開けない | ネットワークが「パブリック」（Step 1-2）/ node.exe のブロック規則が残っている（Step 8）/ 端末が別サブネット（Step 8 の CIDR 指定） |
 | ログに `初期管理者を作成しました` | 空の DB で起動している。.env を読めていない（`injected env (0)`、`.env.txt` になっている）か、DB_PATH の誤り |
+| 開始直後に止まり、ログに `操作ログの初期化エラー` | 操作ログの保存先（既定は DB と同じフォルダの `audit`。.env で `AUDIT_LOG_DIR` を書いた場合はその場所）を作成できない・書き込めない。場所の書き間違いと、フォルダの権限（Step 3）を確認する。記録なしで動き続けないよう、アプリは起動を止める |
+| 開始直後に止まり、ログに `TRUST_PROXY の値が正しくありません` | .env の `TRUST_PROXY` の書き間違い。`loopback`（同じ機械の Caddy）か `1`（NAS 内蔵のプロキシ）にする。`true` は使えない |
+| 開始直後に止まり、ログに `ERR_REQUIRE_ESM` や `require() of ES Module` | Node.js が 22.12 より古い（未検証。古い Node.js はこの PC で実行できないため、公式の仕様に基づく記述）。Step 2 で 26 LTS を入れ直す |
+| ログインすると画面の上部に「パスワードの基準を満たしていません」 | 初期パスワード（admin123）や、基準ができる前に決めたパスワードのまま。管理者がマスタ管理 → ユーザー管理で変更する |
+| 「このユーザーIDは…一時的にロックされています」と出てログインできない | パスワードを 5 回続けて間違えた。15 分待つか、管理者がマスタ管理 → ユーザー管理の「ロック解除」を押す。管理者自身がロックされて急ぐときは `Restart-Service hiyoukeisan`（全員ログアウトになる） |
 | `git pull` で `detected dubious ownership` | 管理者 PowerShell で実行しているか確認する。それでも出れば `git config --global --add safe.directory C:/hiyou/app` |
 | exe が「スマート アプリ コントロール」で止められる | WinSW と Puppeteer の Chrome はどちらも未署名（確認済み）。この機能がオンの新品 Windows 11 では止められる可能性がある（未検証） |
 
@@ -416,9 +430,10 @@ WinSW を選んだ理由: 再起動の仕組みが Windows 標準のサービス
 
 ## 9. このアプリ固有の注意（コードから）
 
-- 待ち受けは `app.listen(PORT)`（server/index.js）でホスト指定なし = 全インターフェース。LAN 限定はファイアウォールで担保する。
+- 待ち受けは、.env に `HOST` を書かなければ全インターフェース（server/index.js）。LAN 限定はファイアウォールで担保する。`HOST=127.0.0.1` を書くと、サーバー自身からしか接続できなくなる（HTTPS のプロキシを同じ機械に置く場合に使う。[2_運用編.md](2_運用編.md) の 3章）。
 - `.env` と Chrome の場所は、作業フォルダに関係なくプロジェクト直下のものが使われる（2026-11-21 の修正。server/index.js の先頭）。
-- ログイン状態はメモリ上（express-session の既定）。サービス再起動 = 全員再ログイン。
-- 通信は暗号化なしの HTTP。LAN 内限定が前提。
+- ログイン状態はメモリ上（express-session の既定）。サービス再起動 = 全員再ログイン。ログイン失敗の回数とロックもメモリ上なので、再起動で消える。
+- 通信は、何も設定しなければ暗号化なしの HTTP（LAN 内限定が前提）。HTTPS にする場合のアプリ側の対応は済んでいる（2編 3章）。
+- 操作ログは `C:\hiyou\data\audit\audit-YYYY-MM.jsonl` に追記される（DB とは別のファイル。1 行が 1 件）。
 - 停止は Ctrl+C 相当 → 15 秒で強制終了。DB の保存は「一時ファイル（`hiyou.db.tmp`）に書いてから差し替え」なので、保存の途中で止まっても DB ファイルは直前の完全な内容のまま残る（2026-11-21 の修正。その瞬間の未保存の入力は消える）。停止・再起動は利用者のいない時間に行い、更新前に DB をコピーする。
-- Node.js は 20 以上が必要（node-cron 4.6.0 の要求）。
+- Node.js は 22.12 以上が必要（puppeteer 25.18.1 の要求）。
