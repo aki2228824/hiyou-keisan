@@ -2,14 +2,17 @@
 # ASCII only on purpose (Windows PowerShell 5.1 misreads UTF-8 files without BOM).
 # Needs verify-db.js in the same folder as this script.
 # Exit code: 0 = OK
-#            1 = ERROR   (no verified backup was made, or the copy to the second device failed)
+#            1 = ERROR   (no verified backup was made, or the copy of the operation log / to the second device failed)
 #            2 = WARNING (the data file is less than half the size of the last good backup;
-#                         the copy is kept aside as SHRUNK_*.db and no generation is deleted)
+#                         the copy is kept aside as SHRUNK_*.db and no generation is deleted.
+#                         Also: an operation-log file is smaller than its backup copy)
+# The operation log (audit-YYYY-MM.jsonl) is copied to <LocalDir>\audit and, with it, to the second device.
 param(
   [string]$DbPath      = 'C:\hiyou\data\hiyou.db',            # same file as DB_PATH in .env
   [string]$AppRoot     = 'C:\hiyou\app',                      # folder that contains node_modules\sql.js
   [string]$LocalDir    = 'C:\hiyou\backup',                   # 1st copy (another physical disk if you have one)
   [string]$RemoteDir   = '',                                  # 2nd copy on another device, e.g. \\NAS01\hiyou-backup ('' = skip)
+  [string]$AuditDir    = '',                                  # operation-log folder (AUDIT_LOG_DIR in .env). '' = the "audit" folder next to $DbPath
   [string]$Node        = 'C:\Program Files\nodejs\node.exe',
   [int]$KeepDaily      = 30,                                  # daily generations kept in $LocalDir
   [int]$KeepMonthly    = 24,                                  # monthly generations kept in $LocalDir
@@ -43,6 +46,12 @@ function Get-SharedHash([string]$path) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { return [System.BitConverter]::ToString($sha.ComputeHash($in)) } finally { $sha.Dispose() }
   } finally { $in.Close() }
+}
+function Get-SharedLength([string]$path) {
+  # The app keeps the current month's log file open. While a file is open for writing, the size shown in a
+  # folder listing can be out of date, so ask through a file handle instead.
+  $in = Open-Shared $path
+  try { return $in.Length } finally { $in.Close() }
 }
 
 try {
@@ -92,6 +101,38 @@ try {
     Get-ChildItem -LiteralPath $daily   -Filter 'hiyou_*.db' | Sort-Object Name -Descending | Select-Object -Skip $KeepDaily   | Remove-Item -Force
     Get-ChildItem -LiteralPath $monthly -Filter 'hiyou_*.db' | Sort-Object Name -Descending | Select-Object -Skip $KeepMonthly | Remove-Item -Force
     Write-Log "$detail -> $dest"
+  }
+
+  # 4b) Operation log (audit-YYYY-MM.jsonl, one file per month, written by the app next to the database).
+  #     These are append-only text files: a month file that grew is copied again; nothing is ever deleted here.
+  #     A file that became SMALLER than its backup copy is not copied (the bigger backup copy is kept) and is
+  #     reported as a WARNING: someone deleted or cut the log.
+  #     A problem here is reported through the exit code, but it never undoes the database backup made above.
+  if (-not $AuditDir) { $AuditDir = Join-Path (Split-Path -Parent $DbPath) 'audit' }
+  if (Test-Path -LiteralPath $AuditDir) {
+    try {
+      $auditDest = Join-Path $LocalDir 'audit'
+      New-Item -ItemType Directory -Force -Path $auditDest | Out-Null
+      $copied = 0
+      foreach ($f in @(Get-ChildItem -LiteralPath $AuditDir -Filter 'audit-*.jsonl' -File | Sort-Object Name)) {
+        $target = Join-Path $auditDest $f.Name
+        $srcLen = Get-SharedLength $f.FullName
+        $dstLen = -1
+        if (Test-Path -LiteralPath $target) { $dstLen = (Get-Item -LiteralPath $target).Length }
+        if ($srcLen -eq $dstLen) { continue }
+        if ($srcLen -lt $dstLen) {
+          Write-Log "WARNING operation log $($f.Name) is smaller ($srcLen bytes) than its backup copy ($dstLen bytes). The backup copy is kept. CHECK WHO CHANGED THE LOG."
+          if ($code -eq 0) { $code = 2 }
+          continue
+        }
+        Copy-Shared $f.FullName $target
+        $copied++
+      }
+      Write-Log "operation log: $copied file(s) copied to $auditDest"
+    } catch {
+      Write-Log "ERROR operation log copy failed: $($_.Exception.Message). The database backup is not affected."
+      $code = 1
+    }
   }
 
   # 5) Second device: copy the already-verified backup folder (never the live file) to the NAS / other PC.

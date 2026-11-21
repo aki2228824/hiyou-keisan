@@ -15,7 +15,7 @@ const readline = require('readline');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const MAX_STRING = 200;      // 1つの文字列の上限（超えた分は切る）
 const MAX_DETAIL = 2000;     // detail 全体の上限（JSON にしたときの文字数）
-const CHECK_INTERVAL_MS = 5000;
+let checkIntervalMs = 5000;    // 「ファイルがまだあるか」を確かめる間隔
 
 let dir = null;              // 保存先フォルダ（init() で決まる。それまでは何も書かない）
 let fd = null;               // いま追記しているファイル
@@ -58,7 +58,7 @@ function openFor(d) {
   if (fd !== null && name === fdName) {
     // 開いている間にファイルを消されたり名前を変えられたりすると、見えないファイルへ書き続けてしまう。
     // ときどき確かめて、無くなっていたら作り直す
-    if (now - lastCheckedAt < CHECK_INTERVAL_MS) return;
+    if (now - lastCheckedAt < checkIntervalMs) return;
     lastCheckedAt = now;
     if (fs.existsSync(path.join(dir, name))) return;
   }
@@ -107,10 +107,9 @@ function init(dbPath) {
   return dir;
 }
 
-// 1件を追記する。成功したら true。失敗しても例外は投げない
-function write(entry) {
+// 1件を追記する。成功したら true。失敗しても例外は投げない（d は自己テスト用。通常は現在時刻）
+function write(entry, d = new Date()) {
   if (!dir) return false;
-  const d = new Date();
   try {
     const line = JSON.stringify({ t: localIso(d), ...entry }) + '\n';
     openFor(d);
@@ -264,4 +263,8 @@ function status() {
   return { dir, failedCount, lastError };
 }
 
-module.exports = { init, write, record, recordSystem, read, status, clientIp, localIso, kindsOf, _sanitize: sanitize };
+module.exports = {
+  init, write, record, recordSystem, read, status, clientIp, localIso, kindsOf,
+  // 自己テスト（tools/selftest-security.js）用
+  _test: { sanitize, setCheckInterval: ms => { checkIntervalMs = ms; }, close: closeFile },
+};
