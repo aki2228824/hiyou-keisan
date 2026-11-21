@@ -1,4 +1,6 @@
-require('dotenv').config();
+// .env はプロジェクト直下のものを読む（起動時の作業フォルダに左右されないよう、場所を固定する。
+// サービスやタスクとして起動すると作業フォルダが変わり、.env が読まれずに既定値で動いてしまうため）
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const express = require('express');
 const path = require('path');

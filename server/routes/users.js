@@ -42,12 +42,13 @@ router.put('/:id', requireRole('admin'), (req, res) => {
   if ((role !== 'admin' || !newActive) && !hasOtherActiveAdmin(target.id))
     return res.status(400).json({ error: '有効な管理者が1人もいなくなるため変更できません' });
 
-  db.run('UPDATE users SET username=?, role=?, active=? WHERE id=?',
-    [String(username).trim(), role, newActive, target.id]);
-  if (password) {
-    const hash = bcrypt.hashSync(String(password), 10);
-    db.run('UPDATE users SET password_hash=? WHERE id=?', [hash, target.id]);
-  }
+  // ユーザー情報とパスワードの変更をひとまとまりで確定する（ID重複などで失敗したら両方とも変更しない）
+  const hash = password ? bcrypt.hashSync(String(password), 10) : null;
+  db.transaction(() => {
+    db.run('UPDATE users SET username=?, role=?, active=? WHERE id=?',
+      [String(username).trim(), role, newActive, target.id]);
+    if (hash) db.run('UPDATE users SET password_hash=? WHERE id=?', [hash, target.id]);
+  });
   res.json({ ok: true });
 });
 

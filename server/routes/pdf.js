@@ -20,6 +20,24 @@ function num(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// PDF 1件ごとに Chrome を起動し、1件あたり数百MBのメモリを使う。
+// 同時に起動する数を制限し、超えた分は順番待ちにする（.env の PDF_CONCURRENCY で変更可。既定 2）。
+const MAX_PDF_JOBS = Math.max(1, Math.floor(Number(process.env.PDF_CONCURRENCY)) || 2);
+let pdfJobsRunning = 0;
+const pdfJobsWaiting = [];
+
+async function withPdfSlot(job) {
+  if (pdfJobsRunning >= MAX_PDF_JOBS) await new Promise(resolve => pdfJobsWaiting.push(resolve));
+  else pdfJobsRunning++;
+  try {
+    return await job();
+  } finally {
+    // 待っている人がいれば枠をそのまま引き継ぐ。いなければ枠を空ける
+    const next = pdfJobsWaiting.shift();
+    if (next) next(); else pdfJobsRunning--;
+  }
+}
+
 router.get('/', async (req, res) => {
   try {
     const { patient_id, year, month } = req.query;
@@ -76,7 +94,9 @@ router.get('/', async (req, res) => {
     const days = [];
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      const dow = new Date(dateStr).getDay();
+      // 'YYYY-MM-DD' は UTC の0時として解釈されるので、曜日も UTC で取り出す
+      // （getDay() だとサーバーのタイムゾーンが UTC より西のとき1日ずれる）
+      const dow = new Date(dateStr).getUTCDay();
       days.push({ dateStr, day: d, dow: dayNames[dow] });
     }
 
@@ -94,15 +114,16 @@ router.get('/', async (req, res) => {
     const html = buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTotals, grandTotal, mealTotal, year, month });
 
     // 描画に失敗しても Chrome のプロセスが残らないよう、必ず finally で閉じる
-    let pdf;
-    const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
-    try {
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: 'networkidle0' });
-      pdf = await page.pdf({ format: 'A3', landscape: true, printBackground: true });
-    } finally {
-      await browser.close().catch(() => {});
-    }
+    const pdf = await withPdfSlot(async () => {
+      const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: 'networkidle0' });
+        return await page.pdf({ format: 'A3', landscape: true, printBackground: true });
+      } finally {
+        await browser.close().catch(() => {});
+      }
+    });
 
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="seikyu_${patient_id}_${year}${month}.pdf"` });
     res.send(pdf);
