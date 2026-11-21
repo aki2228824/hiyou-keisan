@@ -158,8 +158,27 @@ let lastAlert = { message: '', closedAt: 0 };
 // ============================================================
 let selectedWardId    = null;
 let selectedPatientId = null;
+let loadedMonth       = null;  // いま表示している入力表の対象月（月の切替を取りやめたときに戻す値）
+let savingRecords     = false; // 一括保存の実行中か（二重クリック防止）
 
 const DOW = ['日','月','火','水','木','金','土'];
+
+// 入力表に、まだ保存していない変更があるか（変更した欄には data-dirty の印が付く）
+function hasUnsavedInput() {
+  return !!document.querySelector('#monthly-tbl .cell-input[data-dirty]');
+}
+
+// 未保存の変更があるときは、表を切り替える前に確認する。切り替えてよければ true
+function confirmDiscardUnsaved() {
+  return !hasUnsavedInput() || confirm('保存していない入力があります。\n保存せずに切り替えますか？（入力した内容は消えます）');
+}
+
+// 未保存の変更があるまま、タブを閉じる・再読み込み・ログアウトしようとしたらブラウザの確認を出す
+window.addEventListener('beforeunload', e => {
+  if (!hasUnsavedInput()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 async function initInputPage() {
   const wards = await api('/wards');
@@ -178,8 +197,10 @@ async function initInputPage() {
 }
 
 async function selectWard(wardId) {
+  if (!confirmDiscardUnsaved()) return;
   selectedWardId = wardId;
   selectedPatientId = null;
+  loadedMonth = null;
   document.getElementById('input-form').innerHTML = '';
   document.querySelectorAll('.ward-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.ward-btn[onclick="selectWard(${wardId})"]`).classList.add('active');
@@ -200,7 +221,9 @@ async function loadPatients() {
 }
 
 async function selectPatient(patientId) {
+  if (!confirmDiscardUnsaved()) return;
   selectedPatientId = patientId;
+  loadedMonth = null; // 上で確認済みなので、loadInputForm では重ねて確認しない
   document.querySelectorAll('.patient-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.patient-btn[onclick="selectPatient(${patientId})"]`).classList.add('active');
   await loadInputForm();
@@ -208,7 +231,13 @@ async function selectPatient(patientId) {
 
 async function loadInputForm() {
   const patientId = selectedPatientId;
-  const ym = document.getElementById('sel-month').value;
+  const monthEl = document.getElementById('sel-month');
+  // 対象月を切り替えたとき：未保存の変更があれば確認し、取りやめるなら月の表示を元に戻す
+  if (loadedMonth && monthEl.value !== loadedMonth && !confirmDiscardUnsaved()) {
+    monthEl.value = loadedMonth;
+    return;
+  }
+  const ym = monthEl.value;
   if (!patientId || !ym) return;
 
   const [year, month] = ym.split('-');
@@ -343,8 +372,13 @@ async function loadInputForm() {
       </div>
     </div>`;
 
-  // 入力のたびに小計を再計算
-  document.getElementById('monthly-tbl').addEventListener('input', () => updateSubtotals(activeItems));
+  loadedMonth = ym;
+
+  // 入力のたびに、変更した欄へ「未保存」の印を付けて小計を再計算する（保存時は印の付いた欄だけを送る）
+  document.getElementById('monthly-tbl').addEventListener('input', e => {
+    if (e.target.classList.contains('cell-input')) e.target.dataset.dirty = '1';
+    updateSubtotals(activeItems);
+  });
 
   // Enterキーで次の入力欄へ移動
   document.getElementById('monthly-tbl').addEventListener('keydown', e => {
@@ -424,35 +458,45 @@ async function saveMealPrices(patientId, year, month) {
 
 async function saveAllRecords() {
   const patientId = selectedPatientId;
-  if (!patientId) return;
+  if (!patientId || savingRecords) return;
 
-  // 日付ごとにまとめる
-  const byDate = {};
+  // 変更した欄だけを送る。
+  // 表の全部の欄を送り直すと、この画面を開いた後にほかの人が保存した内容を、
+  // 自分が触っていない欄の古い値で上書きして消してしまうため。
+  const dirty = [...document.querySelectorAll('#monthly-tbl .cell-input[data-dirty]')];
+  if (!dirty.length) { showToast('変更はありません'); return; }
+  const dates = [...new Set(dirty.map(el => el.dataset.date))].sort();
 
-  document.querySelectorAll('.cell-input[data-item]').forEach(el => {
-    const date = el.dataset.date;
-    const itemId = Number(el.dataset.item);
-    const qty = Number(el.value) || 0;
-    if (!byDate[date]) byDate[date] = { items: [], meal: {} };
-    byDate[date].items.push({ item_id: itemId, quantity: qty });
-  });
-
-  document.querySelectorAll('.cell-input[data-meal]').forEach(el => {
-    const date = el.dataset.date;
-    const field = el.dataset.meal;
-    if (!byDate[date]) byDate[date] = { items: [], meal: {} };
-    byDate[date].meal[field] = field === 'service_status' ? el.value : (Number(el.value) || 0);
-  });
-
-  for (const [date, data] of Object.entries(byDate)) {
-    await api('/records', { method: 'POST', body: {
-      patient_id: patientId,
-      record_date: date,
-      items: data.items,
-      meal: data.meal,
-    }});
+  const button = document.querySelector('#input-form button[onclick="saveAllRecords()"]');
+  savingRecords = true;
+  if (button) { button.disabled = true; button.textContent = '保存中…'; }
+  try {
+    for (const date of dates) {
+      const changed = dirty.filter(el => el.dataset.date === date).map(el => ({ el, sent: el.value }));
+      const body = {
+        patient_id: patientId,
+        record_date: date,
+        items: changed.filter(c => c.el.dataset.item)
+          .map(c => ({ item_id: Number(c.el.dataset.item), quantity: Number(c.sent) || 0 })),
+      };
+      // 食事・サービスの欄は1日分が1行で保存されるので、どれかを変更した日は6欄をまとめて送る
+      if (changed.some(c => c.el.dataset.meal)) {
+        body.meal = {};
+        document.querySelectorAll(`#monthly-tbl .cell-input[data-meal][data-date="${date}"]`).forEach(el => {
+          const field = el.dataset.meal;
+          body.meal[field] = field === 'service_status' ? el.value : (Number(el.value) || 0);
+        });
+      }
+      await api('/records', { method: 'POST', body });
+      // 保存できた欄から印を外す（途中で失敗した場合、残りの欄は未保存のまま再度保存できる）。
+      // 送信中に打ち直された欄は、まだ保存されていないので印を残す。
+      for (const c of changed) if (c.el.value === c.sent) delete c.el.dataset.dirty;
+    }
+    showToast('保存しました');
+  } finally {
+    savingRecords = false;
+    if (button) { button.disabled = false; button.textContent = '一括保存'; }
   }
-  showToast('保存しました');
 }
 
 // ============================================================
