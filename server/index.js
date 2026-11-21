@@ -2,6 +2,12 @@
 // サービスやタスクとして起動すると作業フォルダが変わり、.env が読まれずに既定値で動いてしまうため）
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
+// 請求書PDFで使う Chrome の置き場所も、プロジェクト内（.cache/puppeteer）に固定する（.puppeteerrc.cjs と同じ場所）。
+// 設定ファイルは起動時の作業フォルダから探されるため、作業フォルダやアカウントが違っても見つかるよう環境変数でも指定する。
+// （PUPPETEER_EXECUTABLE_PATH でブラウザを直接指定している場合と、.env 等で指定済みの場合は何もしない）
+if (!process.env.PUPPETEER_CACHE_DIR && !process.env.PUPPETEER_EXECUTABLE_PATH)
+  process.env.PUPPETEER_CACHE_DIR = require('path').join(__dirname, '..', '.cache', 'puppeteer');
+
 const express = require('express');
 const path = require('path');
 const session = require('express-session');
