@@ -117,7 +117,12 @@ function createLockout(opts = {}) {
   function keysOf(id) {
     const prefix = 'P' + id + '\n';
     const keys = [];
-    for (const key of entries.keys()) if (key === globalKey(id) || key.startsWith(prefix)) keys.push(key);
+    for (const key of entries.keys()) {
+      // 接続元（IPアドレス）に改行は入らない。prefix のあとにまだ改行があるキーは「このID＋改行＋…」という別のID
+      // （ログイン画面に細工した文字列を入れたもの）の記録なので、このIDのものとして扱わない。
+      // 扱ってしまうと、実際にはロックされていないユーザーが、ユーザー管理の画面で「ロック中」と表示される
+      if (key === globalKey(id) || (key.startsWith(prefix) && !key.includes('\n', prefix.length))) keys.push(key);
+    }
     return keys;
   }
 
@@ -126,6 +131,11 @@ function createLockout(opts = {}) {
     let seconds = 0;
     for (const key of keysOf(id)) seconds = Math.max(seconds, secondsLeft(current(key)));
     return seconds;
+  }
+
+  // ②のロック中（どの接続元からもログインできない状態）か。false で lockedSeconds() が 0 より大きいときは、一部の接続元だけがロック中
+  function lockedEverywhere(id) {
+    return secondsLeft(current(globalKey(id))) > 0;
   }
 
   // 管理者によるロック解除（パスワードの変更時も呼ぶ）。そのユーザーIDの回数とロックをすべて消す。ロックされていたら true
@@ -151,10 +161,59 @@ function createLockout(opts = {}) {
   }
 
   return {
-    begin, fail, succeed, unlock, lockedSeconds,
+    begin, fail, succeed, unlock, lockedSeconds, lockedEverywhere,
     maxFailures, globalLimit, lockMinutes: Math.round(lockMs / 60000),
     _size: () => entries.size,
   };
 }
 
-module.exports = { ...createLockout(), createLockout };
+// ---------------------------------------------------------------- ログインの試行回数の上限
+// パスワードの照合（bcrypt）は1回に 0.1 秒ほど計算機を使い、その間はほかの人の操作も待たされる。
+// ログインの要求は未ログインでも好きなだけ送れるので、照合に進める回数に上限を設ける（超えた分は照合せずに断る）。
+//   ・同じ接続元からは 1分間に PER_SOURCE_PER_MINUTE 回まで
+//   ・全体では 1分間に TOTAL_PER_MINUTE 回まで
+// 上のロックとは別の仕組み（ロックは「同じユーザーIDへの失敗の回数」、こちらは「照合そのものの回数」）。
+const PER_SOURCE_PER_MINUTE = 20;
+const TOTAL_PER_MINUTE = 120;
+const MAX_SOURCES = 10000;      // 接続元ごとの記録の数の上限
+
+/**
+ * @param {{ perSource?: number, total?: number, maxSources?: number, now?: () => number }} [opts]  テスト用に差し替えられる
+ */
+function createAttemptLimiter(opts = {}) {
+  const perSource = opts.perSource ?? PER_SOURCE_PER_MINUTE;
+  const total = opts.total ?? TOTAL_PER_MINUTE;
+  const maxSources = opts.maxSources ?? MAX_SOURCES;
+  const now = opts.now ?? monotonicNow;
+  const sources = new Map();                       // 接続元 → { start, count }
+  // 全体の回数は、接続元ごとの記録とは別に持つ。以前は同じ入れ物に入れていたため、接続元を1万通り以上に変えながら
+  // 送ると、記録の掃除といっしょに全体の回数も消えて、上限が数え直しになった（2026-11-22 の点検で確認。動作検証.md の S-04）
+  const all = { start: -Infinity, count: 0 };
+
+  const take = (c, limit, t) => {
+    if (t - c.start >= 60000) { c.start = t; c.count = 0; }
+    if (c.count >= limit) return false;
+    c.count++;
+    return true;
+  };
+
+  /** その接続元からのログインの試行を、パスワードの照合に進めてよいか */
+  function allow(ip) {
+    const t = now();
+    let mine = sources.get(ip);
+    if (!mine) {
+      // 記録が増えすぎたら、1分を過ぎたものを捨てる。それでも多ければ全部捨てる（全体の回数は別なので、上限は変わらない）
+      if (sources.size >= maxSources) {
+        for (const [key, c] of sources) if (t - c.start >= 60000) sources.delete(key);
+        if (sources.size >= maxSources) sources.clear();
+      }
+      mine = { start: t, count: 0 };
+      sources.set(ip, mine);
+    }
+    return take(mine, perSource, t) && take(all, total, t);
+  }
+
+  return { allow, perSource, total, _size: () => sources.size };
+}
+
+module.exports = { ...createLockout(), createLockout, attempts: createAttemptLimiter(), createAttemptLimiter };

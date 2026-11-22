@@ -100,10 +100,15 @@ function Copy-OperationLog([string]$srcDir, [string]$dstDir, [bool]$explicit, [s
       $srcLen = Get-SharedLength $f.FullName
       if (Test-Path -LiteralPath $target) {
         $dstLen = (Get-Item -LiteralPath $target).Length
-        if ($srcLen -eq $dstLen) { continue }
         $changed = ''
         if ($srcLen -lt $dstLen) { $changed = "is smaller ($srcLen bytes) than its backup copy ($dstLen bytes)" }
-        elseif ((Get-PrefixHash $f.FullName $dstLen) -ne (Get-SharedHash $target)) { $changed = 'no longer starts with the content of its backup copy (lines were changed or removed)' }
+        elseif ((Get-PrefixHash $f.FullName $dstLen) -ne (Get-SharedHash $target)) {
+          # Also checked when the size is unchanged (every past month): an edit that keeps the length,
+          # such as one user ID replaced by another of the same length, must not go unnoticed.
+          if ($srcLen -eq $dstLen) { $changed = 'has the same size as its backup copy but different content (lines were changed)' }
+          else { $changed = 'no longer starts with the content of its backup copy (lines were changed or removed)' }
+        }
+        elseif ($srcLen -eq $dstLen) { continue }   # unchanged since the last backup: nothing to copy
         if ($changed) {
           $aside = "$($f.Name).before-$stamp"
           Rename-Item -LiteralPath $target -NewName $aside
@@ -214,5 +219,18 @@ try {
   exit (Get-ExitCode $code $auditCode)
 } catch {
   Write-Log "ERROR $($_.Exception.Message)"
+  # The database backup failed. The operation log was already copied to the local backup folder in step 0;
+  # send that folder to the second device anyway, so that the second copy of the log does not fall behind
+  # for as long as the database problem lasts. (Database files are not sent: none was verified tonight.)
+  try {
+    $localAudit = Join-Path $LocalDir 'audit'
+    if ($RemoteDir -and (Test-Path -LiteralPath $RemoteDir) -and (Test-Path -LiteralPath $localAudit)) {
+      robocopy $localAudit (Join-Path $RemoteDir 'audit') /E /R:2 /W:5 /NP /NJH /NJS /NFL /NDL | Out-Null
+      if ($LASTEXITCODE -ge 8) { Write-Log "ERROR operation log copy to $RemoteDir failed (robocopy exit code $LASTEXITCODE)." }
+      else { Write-Log "operation log: sent to the second device ($RemoteDir) although the database backup failed" }
+    }
+  } catch {
+    Write-Log "ERROR operation log copy to the second device failed: $($_.Exception.Message)"
+  }
   exit 1
 }

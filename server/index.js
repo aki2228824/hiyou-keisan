@@ -8,7 +8,13 @@ if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 12)) {
 
 // .env はプロジェクト直下のものを読む（起動時の作業フォルダに左右されないよう、場所を固定する。
 // サービスやタスクとして起動すると作業フォルダが変わり、.env が読まれずに既定値で動いてしまうため）
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+// （node_modules が無い＝npm ci が済んでいない場合は、ここが最初に失敗するので、理由を表示して止める）
+try {
+  require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+} catch (err) {
+  console.error('プログラムの読み込みエラー（npm ci が済んでいるか、ファイルが欠けていないかを確認してください）:', err.message);
+  process.exit(1);
+}
 
 // 請求書PDFで使う Chrome の置き場所も、プロジェクト内（.cache/puppeteer）に固定する（.puppeteerrc.cjs と同じ場所）。
 // 設定ファイルは起動時の作業フォルダから探されるため、作業フォルダやアカウントが違っても見つかるよう環境変数でも指定する。
@@ -21,7 +27,7 @@ const path = require('path');
 const session = require('express-session');
 const db = require('./database');
 const audit = require('./services/auditLog');
-const { auditMiddleware } = require('./middleware/audit');
+const { auditMiddleware, rejectOddUrls } = require('./middleware/audit');
 const { requireAuth, requireRole } = require('./middleware/auth');
 
 // 各ルートのプログラムを先に読み込む。読み込めないのは「npm ci が済んでいない」「ファイルが欠けている」など
@@ -55,7 +61,15 @@ function parseTrustProxy(raw) {
   if (!value || value === '0' || value.toLowerCase() === 'false') return undefined;
   if (value.toLowerCase() === 'true')
     throw new Error('TRUST_PROXY=true は使えません。loopback（同じ機械のプロキシ）か 1（1段手前のプロキシ）を指定してください。');
-  return /^\d+$/.test(value) ? Number(value) : value;
+  if (/^\d+$/.test(value)) {
+    // 数字は「手前にあるプロキシの段数」。実際の段数より大きい数を書くと、利用者が送ったヘッダーまで信用してしまう
+    // （true と同じ結果になる）ので、ありえない大きさは受け付けない
+    const hops = Number(value);
+    if (hops === 0) return undefined;   // 00 のような書き方も「信用しない」
+    if (hops > 3) throw new Error('TRUST_PROXY の段数が大きすぎます。手前にあるプロキシの段数（ふつうは 1）を指定してください。');
+    return hops;
+  }
+  return value;
 }
 
 const app = express();
@@ -93,6 +107,8 @@ app.use(session({
 
 // 操作ログ。JSON の読み取りに失敗した要求（400）も記録できるよう、express.json() より前に置く
 app.use(auditMiddleware);
+// 細工した書き方のURL（/ の重ね書き、%00）は、ここで断る（上の操作ログには「断った」ことが残る）
+app.use(rejectOddUrls);
 app.use(express.json());
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -163,7 +179,9 @@ db.getDb().then(() => {
     // npm ci 自体は成功したように見えるので、ここで気づけるようにする（無くても起動は続ける。PDF 以外は使える）。
     (async () => {
       const chrome = process.env.PUPPETEER_EXECUTABLE_PATH || await require('puppeteer').executablePath();
-      if (!require('fs').existsSync(chrome)) {
+      let found = false;
+      try { found = require('fs').statSync(chrome).isFile(); } catch (_) { /* 無い */ }   // フォルダを指している場合も「無い」と扱う
+      if (!found) {
         console.error(`請求書PDF用の Chrome が見つかりません: ${chrome}\n` +
           'このままでは請求書PDFを出力できません。プロジェクトのフォルダで「npx.cmd puppeteer browsers install chrome」を実行してください' +
           '（インターネットに出られる必要があります）。');

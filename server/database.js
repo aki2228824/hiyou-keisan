@@ -2,10 +2,14 @@ const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
 
-// DBファイルの場所。環境変数 DB_PATH があればそれを使い、無ければ従来どおり data/hiyou.db
-const DB_PATH = process.env.DB_PATH
-  ? path.resolve(process.env.DB_PATH)
-  : path.join(__dirname, '..', 'data', 'hiyou.db');
+// DBファイルの場所。環境変数 DB_PATH があればそれを使い、無ければ従来どおり data/hiyou.db。
+// 相対パス（data/hiyou.db のような書き方）は、プロジェクトのフォルダから見た場所として読む。
+// 起動したときの作業フォルダから見た場所にすると、別のフォルダから起動した・ツールを実行したときに、
+// 別の場所を見て空のDBを新しく作ってしまう（操作ログの AUDIT_LOG_DIR、.env の読み込みと同じ扱いにそろえる）。
+const PROJECT_ROOT = path.join(__dirname, '..');
+const DB_PATH = String(process.env.DB_PATH ?? '').trim()
+  ? path.resolve(PROJECT_ROOT, String(process.env.DB_PATH).trim())
+  : path.join(PROJECT_ROOT, 'data', 'hiyou.db');
 
 // 保存時の一時ファイル。DBと同じフォルダに置く（同じディスク内でないと rename で差し替えられないため）
 const TMP_PATH = DB_PATH + '.tmp';

@@ -26,7 +26,8 @@ function checkUsername(name) {
 router.get('/', requireRole('admin'), (req, res) => {
   // locked_seconds: ログイン失敗の連続でロック中なら、解除までの残り秒数（ロックされていなければ 0）
   const users = db.query('SELECT id, username, role, active FROM users ORDER BY id')
-    .map(u => ({ ...u, locked_seconds: lockout.lockedSeconds(u.username) }));
+    // locked_everywhere: true = どのPCからもログインできない / false = 一部のPC（接続元）だけがロック中
+    .map(u => ({ ...u, locked_seconds: lockout.lockedSeconds(u.username), locked_everywhere: lockout.lockedEverywhere(u.username) }));
   res.json(users);
 });
 
@@ -35,7 +36,8 @@ router.get('/password-policy', requireRole('admin'), (req, res) => {
   res.json({
     min_length: passwordPolicy.minLength(),
     description: passwordPolicy.describe(),
-    max_failures: lockout.maxFailures,
+    max_failures: lockout.maxFailures,       // 同じ接続元（PC）から続けて失敗できる回数
+    global_failures: lockout.globalLimit,    // すべての接続元の合計で、この回数に達するとどこからも入れなくなる
     lock_minutes: lockout.lockMinutes,
   });
 });
@@ -64,6 +66,9 @@ router.put('/:id', requireRole('admin'), (req, res) => {
   if (nameError) return res.status(400).json({ error: nameError });
   if (!ROLES.includes(role))
     return res.status(400).json({ error: 'ロールの指定が正しくありません' });
+  // オブジェクトや配列を Number() に渡すと例外になることがある（{ toString: 1 } など）ので、先に断る
+  if (active != null && typeof active === 'object')
+    return res.status(400).json({ error: '状態の指定が正しくありません' });
 
   const target = db.query('SELECT id, username, password_hash FROM users WHERE id=?', [req.params.id])[0];
   if (!target) return res.status(404).json({ error: 'ユーザーが見つかりません' });

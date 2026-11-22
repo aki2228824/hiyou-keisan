@@ -800,7 +800,17 @@ async function savePrices() {
 }
 
 // --- ユーザー管理 ---
-async function renderMasterUsers() {
+// opts.keepInputsExcept: 一覧を読み直しても、このID以外の行に入力中の内容（まだ登録していない変更）を残す。
+//   1人を「登録」しただけで、ほかの行に打ちかけていたパスワードやロールの変更が消えてしまわないようにするため
+async function renderMasterUsers(opts = {}) {
+  const typed = {};
+  if (opts.keepInputsExcept !== undefined) {
+    for (const u of masterUsers) {
+      const field = part => document.getElementById(`u-${part}-${u.id}`);
+      if (u.id == opts.keepInputsExcept || !field('name')) continue;
+      typed[u.id] = { name: field('name').value, role: field('role').value, pass: field('pass').value, active: field('active').checked };
+    }
+  }
   // policy: パスワードの基準と、ログイン失敗時のロックの設定（説明の表示用）
   const [users, policy] = await Promise.all([api('/users'), api('/users/password-policy')]);
   masterUsers = users;
@@ -815,7 +825,7 @@ async function renderMasterUsers() {
       <td><select id="u-role-${u.id}">${roleOpts(u.role)}</select></td>
       <td><input type="password" id="u-pass-${u.id}" placeholder="変更する場合のみ入力" style="width:150px" autocomplete="new-password"></td>
       <td><label><input type="checkbox" id="u-active-${u.id}" ${u.active?'checked':''}> 有効</label>${
-        u.locked_seconds > 0 ? `<div class="lock-note">ロック中（あと約${Math.ceil(u.locked_seconds / 60)}分）
+        u.locked_seconds > 0 ? `<div class="lock-note">${u.locked_everywhere === false ? '一部のPCでロック中' : 'ロック中'}（あと約${Math.ceil(u.locked_seconds / 60)}分）
           <button onclick="unlockUser(${u.id})" class="btn-sm">ロック解除</button></div>` : ''
       }</td>
       <td><button onclick="saveUser(${u.id})" class="btn-sm btn-register">登録</button></td>
@@ -830,11 +840,19 @@ async function renderMasterUsers() {
       <button onclick="addUser()" class="btn-primary">追加</button>
     </div>
     <p class="policy-note">パスワードの基準：${esc(policy.description)}<br>
-      ログインに${esc(policy.max_failures)}回続けて失敗したユーザーIDは、${esc(policy.lock_minutes)}分間ログインできなくなります（この画面の「ロック解除」で、すぐに戻せます）。</p>
+      同じPCからログインに${esc(policy.max_failures)}回続けて失敗すると、そのPCからは${esc(policy.lock_minutes)}分間、そのユーザーIDでログインできなくなります（ほかのPCからはログインできます。
+      PCを変えながら合計${esc(policy.global_failures ?? policy.max_failures * 4)}回失敗すると、どのPCからもログインできなくなります）。この画面の「ロック解除」で、すぐに戻せます。</p>
     <table class="master-table">
       <thead><tr><th>ユーザーID</th><th>ロール</th><th>パスワード（変更する場合のみ入力）</th><th>状態</th><th>操作</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+
+  // 読み直す前に入力中だった内容を戻す（その間に削除されたユーザーの分は捨てる）
+  for (const [uid, v] of Object.entries(typed)) {
+    const field = part => document.getElementById(`u-${part}-${uid}`);
+    if (!field('name')) continue;
+    field('name').value = v.name; field('role').value = v.role; field('pass').value = v.pass; field('active').checked = v.active;
+  }
 }
 
 async function saveUser(id) {
@@ -850,12 +868,12 @@ async function saveUser(id) {
   try {
     await api(`/users/${id}`, { method: 'PUT', body });
   } catch (e) {
-    renderMasterUsers().catch(() => {}); // 保存できなかった入力を元の値に戻す
+    renderMasterUsers({ keepInputsExcept: id }).catch(() => {}); // 保存できなかった行の入力を元の値に戻す（ほかの行の入力は残す）
     throw e;
   }
-  showToast(`「${username}」の情報を更新しました`);
-  // 一覧を読み直す（パスワードを設定し直すとロックも解除されるので、「ロック中」の表示を消すため）
-  renderMasterUsers();
+  showToast(`「${username}」の情報を更新しました${password ? '（パスワードも変更しました）' : '（パスワードは変更していません）'}`);
+  // 一覧を読み直す（パスワードを設定し直すとロックも解除されるので、「ロック中」の表示を消すため）。ほかの行に入力中の内容は残す
+  renderMasterUsers({ keepInputsExcept: id });
 }
 
 async function deleteUser(id) {
@@ -889,7 +907,7 @@ async function unlockUser(id) {
 // サーバーが記録する出来事の種類（server/middleware/audit.js、server/routes/auth.js）と、画面での呼び名
 const AUDIT_ACTIONS = {
   'login.success': 'ログイン', 'login.failure': 'ログイン失敗', 'login.locked': 'ログイン拒否（ロック中）',
-  'audit.skipped': '記録の省略（要求が多すぎたため、件数だけを記録）', 'audit.gap': '記録の欠落（保存先に書き込めなかった）',
+  'audit.skipped': '多すぎた要求（件数だけを記録）', 'audit.gap': '記録の欠落（保存先に書き込めなかった）',
   'users.password_reset_offline': 'パスワードの再設定（サーバー上のツール）', 'logout': 'ログアウト',
   'records.view': '実績の表示', 'records.save': '実績の保存', 'summary.view': '月次集計の表示',
   'mealprices.view': '食事単価の表示', 'mealprices.list': '食事単価の一覧表示', 'mealprices.save': '食事単価の保存',
@@ -899,7 +917,8 @@ const AUDIT_ACTIONS = {
   'wards.create': '病棟の追加', 'wards.update': '病棟の変更',
   'users.list': 'ユーザー一覧の表示', 'users.create': 'ユーザーの追加', 'users.update': 'ユーザーの変更',
   'users.delete': 'ユーザーの削除', 'users.unlock': 'ロックの解除',
-  'export.run': '週次レポートの手動実行', 'audit.view': '操作ログの表示', 'server.start': 'サーバーの起動', 'other': 'その他の操作',
+  'export.run': '週次レポートの手動実行', 'audit.view': '操作ログの表示', 'server.start': 'サーバーの起動', 'server.warning': 'サーバーの警告',
+  'other': 'その他の操作',
 };
 
 let auditCondition = '';   // 表示中の一覧の検索条件（CSV保存で同じ条件を使う）
@@ -910,7 +929,7 @@ function auditTime(row) {
 }
 
 function auditUser(row) {
-  if (['server.start', 'audit.gap', 'users.password_reset_offline'].includes(row.action)) return '（サーバー）';
+  if (['server.start', 'server.warning', 'audit.gap', 'users.password_reset_offline'].includes(row.action)) return '（サーバー）';
   if (row.user == null) return '（未ログイン）';
   const name = row.role ? `${row.user}（${roleName(row.role)}）` : String(row.user);
   // ほかの人がログインしている画面から試したログインは、その画面の持ち主も出す
@@ -954,6 +973,14 @@ function auditDetail(row) {
   if (rest.unknown_id) { parts.push(`登録されていないユーザーID（${rest.length}文字）`); delete rest.unknown_id; delete rest.length; }
   if (rest.inactive) { parts.push('無効になっているユーザーID'); delete rest.inactive; }
   if (rest.locked) { parts.push(`この失敗でロック（${rest.minutes}分間）`); delete rest.locked; delete rest.minutes; }
+  // 多すぎた要求のまとめ: 件数と、操作の種類ごとの内訳を文にする
+  // （未ログインの要求は「1件ずつの記録を省略した件数」、ログイン済みのユーザーの要求は「処理せずに断った件数」）
+  if (row.action === 'audit.skipped' && rest.count != null) {
+    const kinds = rest.actions && typeof rest.actions === 'object'
+      ? Object.entries(rest.actions).map(([action, n]) => `${AUDIT_ACTIONS[action] ?? action} ${n}件`).join('、') : '';
+    parts.push(`${rest.note ?? '多すぎた要求の件数'}：${rest.count}件${kinds ? `（${kinds}）` : ''}`);
+    delete rest.count; delete rest.note; delete rest.actions; delete rest.refused;
+  }
   if (Object.keys(rest).length) parts.push(JSON.stringify(rest));
   return parts.join(' ／ ');
 }
@@ -972,13 +999,16 @@ function renderMasterAudit() {
         <option value="view">表示・出力</option>
         <option value="change">登録・変更・削除</option>
         <option value="denied">断られた操作・エラー</option>
+        <option value="system">サーバーの出来事</option>
       </select></label>
       <label>キーワード <input type="text" id="audit-q" placeholder="患者の氏名、IPアドレスなど" style="width:180px"></label>
+      <label>患者ID <input type="text" id="audit-pid" inputmode="numeric" placeholder="すべて" style="width:70px"
+        title="削除した患者や、氏名を変える前の記録は、氏名では探せません。患者ID（患者の削除・変更の記録の「対象」に出ています）で探してください"></label>
       <button onclick="loadAuditLog()" class="btn-primary">表示</button>
       <button onclick="downloadAuditCsv()" class="btn-secondary">CSV保存</button>
     </div>
     <p class="policy-note">ログイン・ログアウト、患者の情報の表示と出力、登録・変更・削除の操作を、サーバーが自動で記録しています（新しい順に表示）。
-      月に1回は「断られた操作・エラー」と「ログイン・ログアウト」を確認してください。</p>
+      月に1回は「断られた操作・エラー」「ログイン・ログアウト」「サーバーの出来事」（起動、サーバー上のツールによるパスワードの再設定、記録の欠落）を確認してください。</p>
     <div id="audit-status"></div>
     <div id="audit-table"></div>`;
   return loadAuditLog();
@@ -987,7 +1017,7 @@ function renderMasterAudit() {
 // 画面の検索条件を、API のクエリ文字列にする
 function auditQuery(limit) {
   const params = new URLSearchParams();
-  for (const [key, id] of [['from', 'audit-from'], ['to', 'audit-to'], ['user', 'audit-user'], ['kind', 'audit-kind'], ['q', 'audit-q']]) {
+  for (const [key, id] of [['from', 'audit-from'], ['to', 'audit-to'], ['user', 'audit-user'], ['kind', 'audit-kind'], ['q', 'audit-q'], ['patient_id', 'audit-pid']]) {
     const value = document.getElementById(id).value.trim();
     if (value) params.set(key, value);
   }

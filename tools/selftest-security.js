@@ -12,11 +12,12 @@ const path = require('path');
 delete process.env.PASSWORD_MIN_LENGTH;
 delete process.env.LOGIN_MAX_FAILURES;
 delete process.env.LOGIN_LOCK_MINUTES;
+delete process.env.AUDIT_USER_PER_MINUTE;
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hiyou-selftest-sec-'));
 process.env.AUDIT_LOG_DIR = path.join(workDir, 'audit');
 
 const policy = require('../server/services/passwordPolicy');
-const { createLockout } = require('../server/services/loginLockout');
+const { createLockout, createAttemptLimiter } = require('../server/services/loginLockout');
 const audit = require('../server/services/auditLog');
 const { classify, parseId } = require('../server/middleware/audit');
 
@@ -38,6 +39,8 @@ function check(name, cond, detail) {
   check('3. 英字だけ・数字だけは通らない', !ok('sakuranohanagasaku') && !ok('8203917465028') && /足りないもの: 数字/.test(why('sakuranohanagasaku')));
   check('4. ユーザーIDを含むものは通らない（大文字・小文字を区別しない）', !ok('Tanaka-2026-Haru') && ok('Tanaka-2026-Haru', 'suzuki'));
   check('5. 推測されやすい文字列を含むものは通らない', !ok('Password-2026-x9') && !ok('Qwerty-kensa-7391') && !ok('hiyou-kensa-7391z'));
+  check('5b. 断る理由に、当たった語が示される（施設・業務に関係する語は、案内が無いと理由が分からない）',
+    /「kaigo」/.test(why('Sakura-kaigo-2026x')) && /「password」/.test(why('Pa55w0rd-2026-x9z')) && ok('Sakura-saku-4gatsu-7'), why('Sakura-kaigo-2026x').slice(0, 60));
   check('6. 同じ文字の連続・順番に並んだ文字を含むものは通らない', !ok('Kensaaaa-you-7391') && !ok('Kensa-12345-yoyaku') && !ok('Kensa-edcba-7391z'));
   check('7. 文字の種類が少なすぎるものは通らない', !ok('A1b2A1b2A1b2A1b2'));
   check('8. 全角文字・先頭や末尾の空白は通らない', !ok('Ｓakura-2026-Haru') && !ok(' Sakura-2026-Haru') && !ok('さくら-2026-Haru-xyz'));
@@ -102,6 +105,29 @@ function check(name, cond, detail) {
   for (let i = 0; i < 3000; i++) failOnce(L, 'junk' + i, '10.1.' + (i >> 8) + '.' + (i & 255));
   check('21c. でたらめなIDを大量に送られても記録の数は上限までで、ロック中の記録は実在・非実在のどちらも残る（ロックの有無で実在を見分けられない）',
     L._size() <= 1002 && L.lockedSeconds('real') > 0 && L.lockedSeconds('no-such-id') > 0, `記録数 ${L._size()}`);
+
+  // ---------------------------------------------------------------- ログインの試行回数の上限（時刻を差し替えて確かめる）
+  let tl = 0;
+  let R = createAttemptLimiter({ now: () => tl });
+  const sameSource = Array.from({ length: 25 }, () => R.allow(A));
+  check('21d. 同じ接続元からのログインの試行は、1分間に 20 回までしか照合に進めない。ほかの接続元には影響しない',
+    sameSource.filter(Boolean).length === 20 && sameSource.slice(0, 20).every(Boolean) && R.allow(B) === true && R.perSource === 20 && R.total === 120);
+  tl += 60000;
+  check('21e. 1分たつと、その接続元からの試行を再び受け付ける', R.allow(A) === true);
+  // 接続元ごとの記録が上限（ここでは 50 件）を超えて掃除されても、全体の回数は消えない
+  // （以前は全体の回数も同じ入れ物に入れていたため、接続元を1万通り以上に変えながら送ると、全体の上限も数え直しになった。動作検証.md の S-04）
+  R = createAttemptLimiter({ now: () => tl, maxSources: 50 });
+  let through = 0;
+  for (let i = 0; i < 2000; i++) if (R.allow('10.2.' + (i >> 8) + '.' + (i & 255))) through++;
+  check('21f. 接続元を大量に変えながら送っても、照合に進めるのは全体で1分間に 120 回まで（接続元の記録が掃除されても、全体の回数は数え直しにならない）',
+    through === 120 && R._size() <= 50, `${through} 回 / 接続元の記録 ${R._size()} 件`);
+  tl += 60000;
+  check('21g. 1分たつと、全体の回数も数え直しになる', R.allow('10.3.0.1') === true);
+  // 「実在のID＋改行＋…」という文字列で失敗を重ねても、実在のIDがロック中に見えたりしない
+  L = make();
+  for (let i = 0; i < 5; i++) failOnce(L, 'u\nJUNK');
+  check('21h. 「ID＋改行＋…」という細工した文字列がロックされても、元のIDはロック中と表示されない（解除しても、ほかのIDの記録は消えない）',
+    L.lockedSeconds('u\nJUNK') > 0 && L.lockedSeconds('u') === 0 && L.unlock('u') === false && L.lockedSeconds('u\nJUNK') > 0);
 
   // ---------------------------------------------------------------- 操作ログ
   const dir = audit.init(path.join(workDir, 'hiyou.db'));
@@ -187,6 +213,31 @@ function check(name, cond, detail) {
     kind('GET', '/api/wards') === null && kind('GET', '/api/items') === null && kind('GET', '/api/items/prices') === null &&
     kind('GET', '/css/style.css') === null && kind('GET', '/') === null && kind('POST', '/api/auth/login') === null && kind('GET', '/api/auth/me') === null);
   check('39. 一覧に無い API でも、GET 以外は「その他」として記録する', kind('DELETE', '/api/unknown') === 'other' && kind('POST', '/api/items/abc') === 'other');
+  // 「記録しないものを挙げ、それ以外はすべて記録する」: 表に無い GET も記録の対象にする。/ を重ねた書き方は、1つにそろえて分類する
+  // （以前は /api/pdf//?patient_id=8 のように / を重ねると、記録が1行も残らないまま請求書PDFなどが返った。動作検証.md の S-04）
+  check('39b. / を重ねたURLも同じ操作として分類され、表に無い GET は「その他」として記録の対象になる（記録なしで届く GET を作らない）',
+    kind('GET', '/api/records//') === 'records.view' && kind('GET', '/api/pdf//') === 'pdf.export' && kind('GET', '/api/records//summary') === 'summary.view' &&
+    kind('HEAD', '/api/patients//') === 'patients.list' && kind('GET', '/api/users//') === 'users.list' && kind('GET', '/api//audit') === 'audit.view' &&
+    JSON.stringify(classify('PUT', '/api/patients//8')) === JSON.stringify({ action: 'patients.update', target: 8 }) &&
+    kind('GET', '/api/unknown') === 'other' && kind('GET', '/api/records/extra/path') === 'other' &&
+    kind('GET', '/api/users/password-policy') === null && kind('GET', '/api/wards/') === null && kind('OPTIONS', '/api/records') === null);
+  check('39c. NUL 文字のあとに続きがあるID（DB は NUL の手前までを読む）も、同じ数値として記録される',
+    JSON.stringify(parseId('8\u0000x')) === JSON.stringify({ id: 8, raw: '8\u0000x' }) &&
+    JSON.stringify(classify('PUT', '/api/patients/8%00x')) === JSON.stringify({ action: 'patients.update', target: 8, targetRaw: '8\u0000x' }));
+  {
+    // 細工した書き方のURLは、処理に進めない
+    const { rejectOddUrls } = require('../server/middleware/audit');
+    const tryUrl = (reqPath, originalUrl = reqPath) => {
+      let status = 0, passed = false;
+      const res = { status(code) { status = code; return this; }, json() { return this; } };
+      rejectOddUrls({ path: reqPath, originalUrl }, res, () => { passed = true; });
+      return passed ? 'next' : status;
+    };
+    check('39d. / を重ねたURLは 404、%00 を含むURLは 400 で断る。普通のURLと、API 以外（画面のファイル）は通す',
+      tryUrl('/api/pdf//') === 404 && tryUrl('/api//records') === 404 && tryUrl('//api/records') === 404 &&
+      tryUrl('/api/meal-prices', '/api/meal-prices?patient_id=8%00x') === 400 && tryUrl('/api/patients/8%00', '/api/patients/8%00') === 400 &&
+      tryUrl('/api/records', '/api/records?patient_id=8&year=2026&month=8') === 'next' && tryUrl('/css/style.css') === 'next' && tryUrl('/') === 'next');
+  }
 
   // ---------------------------------------------------------------- 細工した値・変則的な書き方のID・未ログインの連打
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -233,8 +284,15 @@ function check(name, cond, detail) {
   const windows = [audit._test.allowAnonymous(t0), ...Array.from({ length: audit.ANON_PER_MINUTE }, () => audit._test.allowAnonymous(t0 + 1000))];
   check('48. 1分たつと、未ログインの要求の記録を再開する', windows.slice(0, audit.ANON_PER_MINUTE).every(Boolean) && windows[audit.ANON_PER_MINUTE] === false && audit._test.allowAnonymous(t0 + 60000) === true);
   audit._test.resetAnonymous();
-  check('49. 絞り込みの分類: 一覧に無い操作（その他）は「登録・変更・削除」に、記録の省略は「断られた操作・エラー」に入る',
-    audit.kindsOf({ action: 'other', status: 404 }).join() === 'change,denied' && audit.kindsOf({ action: 'audit.skipped' }).join() === 'denied');
+  check('49. 絞り込みの分類: 一覧に無い操作（その他）は「登録・変更・削除」に、多すぎた要求の記録は「断られた操作・エラー」と「サーバーの出来事」に入る',
+    audit.kindsOf({ action: 'other', status: 404 }).join() === 'change,denied' && audit.kindsOf({ action: 'audit.skipped' }).join() === 'denied,system');
+  check('49b. 記録の欠落・サーバーの警告・起動・ツールによるパスワードの再設定も、どれかの分類に入る（月次の確認で絞り込んだときに、表示から漏れない）',
+    audit.kindsOf({ action: 'audit.gap' }).join() === 'denied,system' && audit.kindsOf({ action: 'server.warning' }).join() === 'denied,system' &&
+    audit.kindsOf({ action: 'server.start' }).join() === 'system' && audit.kindsOf({ action: 'users.password_reset_offline' }).join() === 'auth,change,system' &&
+    audit.kindsOf({ action: 'audit.view', status: 200 }).join() === 'view' && audit.kindsOf({ action: 'login.success', status: 200 }).join() === 'auth');
+  const masked = audit._test.sanitize({ password: 'a', newPassword: 'b', pwd: 'c', api_token: 'd', clientSecret: 'e', name: 'のこす' });
+  check('49c. パスワードらしい名前の項目（password・pwd・token・secret を含む名前）は、値を記録しない',
+    masked.password === '***' && masked.newPassword === '***' && masked.pwd === '***' && masked.api_token === '***' && masked.clientSecret === '***' && masked.name === 'のこす');
 
   // ---------------------------------------------------------------- 2回目の修正の確認
   audit._test.resetAnonymous(); audit._test.resetUsers();
@@ -255,17 +313,35 @@ function check(name, cond, detail) {
   check('52. 未ログインの記録の枠を使い切っても、実在するユーザーへのログイン失敗は必ず残る（連打で本命の攻撃を隠せない）', dropped === false && kept === true && lastLine().user === 'tanaka');
   audit._test.resetAnonymous();
 
-  // ログイン済みのユーザーの連打: 上限を超えた分は、種類ごとの件数と患者IDをまとめて残す
+  // ログイン済みのユーザーの連打: 1分あたりの上限を超えた要求は受け付けない（処理しないので、記録に残らない表示・変更は起きない）。
+  // 受け付けた要求の記録は、枠を使い切ったあとでも1件ずつ残る。
+  // （以前は、超えた分も処理して「種類ごとの件数と患者ID 500 件まで」を1行にまとめていたため、
+  //   関係のない患者IDを 500 件送ってから開いた患者が記録に残らなかった。動作検証.md の S-04）
   audit._test.resetUsers();
-  const heavy = req({ session: { user: { id: 77, username: 'renda', role: 'viewer' } } });
-  let one = 0;
-  for (let i = 0; i < audit.USER_PER_MINUTE + 30; i++) if (audit.record(heavy, 'records.view', { status: 200, patient_id: (i % 7) + 1 })) one++;
-  const otherUser = audit.record(req(), 'records.view', { status: 200, patient_id: 1 });
-  audit._test.flushUser(77);
+  const heavyUser = { id: 77, username: 'renda', role: 'viewer' };
+  const tUser = Date.now();
+  let accepted = 0;
+  for (let i = 0; i < audit.USER_PER_MINUTE + 30; i++) if (audit.reserveUser(heavyUser, i % 2 ? 'records.view' : 'pdf.export', tUser)) accepted++;
+  const otherAccepted = audit.reserveUser({ id: 78, username: 'hoka', role: 'staff' }, 'records.view', tUser);
+  const stillRecorded = audit.record(req({ session: { user: heavyUser } }), 'records.view', { status: 200, patient_id: 5151 });
+  const servedLine = lastLine();
+  const nextMinute = audit.reserveUser(heavyUser, 'records.view', tUser + 60000);   // 1分たつと受け付けを再開し、断った件数が書き出される
   const sum = lastLine();
-  check(`53. 同じユーザーの記録は1分あたり ${audit.USER_PER_MINUTE} 件まで。超えた分は「種類ごとの件数」と「患者ID」をまとめて残す。ほかのユーザーには影響しない`,
-    one === audit.USER_PER_MINUTE && otherUser === true && sum.action === 'audit.skipped' && sum.user === 'renda' && sum.detail.count === 30 &&
-    sum.detail.actions['records.view'] === 30 && sum.detail.patient_ids.length === 7, JSON.stringify(sum.detail).slice(0, 160));
+  check(`53. 同じユーザーの要求は1分あたり ${audit.USER_PER_MINUTE} 件まで受け付け、超えた分は断る（断った件数は、操作の種類ごとに1行で残る）。ほかのユーザーには影響せず、1分たてば再開する`,
+    accepted === audit.USER_PER_MINUTE && otherAccepted === true && nextMinute === true &&
+    sum.action === 'audit.skipped' && sum.user === 'renda' && sum.uid === 77 && sum.detail.count === 30 && sum.detail.refused === true &&
+    sum.detail.actions['records.view'] === 15 && sum.detail.actions['pdf.export'] === 15 && !('patient_ids' in sum.detail),
+    JSON.stringify(sum.detail).slice(0, 160));
+  check('57. 受け付けた要求の記録は、枠を使い切ったあとでも省略されない（処理した操作は、必ず1件ずつ「だれが・どの患者に」が残る）',
+    stillRecorded === true && servedLine.action === 'records.view' && servedLine.user === 'renda' && servedLine.patient_id === 5151);
+  // ログイン画面に入力されたIDの記録（ログイン済みの画面から試したもの）は、未ログインの要求と同じ枠で数える
+  audit._test.resetAnonymous();
+  let typedKept = 0;
+  for (let i = 0; i < audit.ANON_PER_MINUTE + 10; i++)
+    if (audit.record(req({ session: { user: heavyUser } }), 'login.failure', { user: null, status: 401, detail: { unknown_id: true, length: 8 } })) typedKept++;
+  check(`58. ログイン済みの画面から試したログイン失敗（登録されていないID）は、未ログインの要求と同じ枠（1分あたり ${audit.ANON_PER_MINUTE} 件）で数える`,
+    typedKept === audit.ANON_PER_MINUTE, `${typedKept} 件を記録`);
+  audit._test.resetAnonymous();
   audit._test.resetUsers();
 
   // 最後の行が途中で切れていても、次の記録はつながらずに読める
@@ -300,7 +376,60 @@ function check(name, cond, detail) {
   r2 = await audit.read({ from: today, to: today, q: 'やまだ', limit: 50, patientIds: new Set([4242]) });
   check('56. キーワード検索は、氏名が合う患者の記録も見つける（行には患者IDしか無い）。検索した記録そのものは拾わない',
     r2.rows.length === 1 && r2.rows[0].action === 'records.view' && r2.rows[0].patient_id === 4242);
+  // 検索した言葉そのもの以外（接続元など）に当たった「操作ログの表示」の記録は拾う。患者IDでの絞り込みは、そのIDの記録だけを返す
+  r2 = await audit.read({ from: today, to: today, q: '192.168.1.23', limit: 500 });
+  const viewsFound = r2.rows.filter(x => x.action === 'audit.view').length;
+  r2 = await audit.read({ from: today, to: today, limit: 500, patientId: 4242 });
+  check('56b. キーワードが接続元などに当たった「操作ログの表示」の記録は拾う。患者IDで絞り込むと、その患者の記録だけになる',
+    viewsFound >= 1 && r2.rows.length >= 1 && r2.rows.every(x => x.patient_id === 4242), `表示の記録 ${viewsFound} 件 / 患者ID 4242 の記録 ${r2.rows.length} 件`);
   audit._test.close();
+
+  // ---------------------------------------------------------------- 非常用のパスワード再設定ツール（入力の部分）
+  // 画面（端末）からの入力をまねて確かめる: 案内は表示され続け、打った文字は一度も画面に出ない
+  const { PassThrough, Writable } = require('stream');
+  const fakeTerminal = () => {
+    const input = new PassThrough(); input.isTTY = true; input.setRawMode = () => input;
+    const written = [];
+    const output = new Writable({ write(chunk, _enc, done) { written.push(chunk.toString()); done(); } });
+    output.isTTY = true; output.columns = 80;
+    // 端末が「行を消す」指示（ESC[J / ESC[K）と改行を処理したあとに、いまの行に見えている文字
+    const visible = () => {
+      let line = '';
+      const text = written.join('');
+      for (let i = 0; i < text.length; i++) {
+        const m = /^\x1b\[(\d*)([GJK])/.exec(text.slice(i, i + 8));
+        if (m) { if (m[2] !== 'G') line = ''; i += m[0].length - 1; }
+        else if (text[i] === '\n') line = '';
+        else if (text[i] !== '\r') line += text[i];
+      }
+      return line;
+    };
+    return { input, output, visible, all: () => written.join('') };
+  };
+  const pause = ms => new Promise(r => setTimeout(r, ms));
+  const { createAsker } = require('./reset-password');
+  let term = fakeTerminal();
+  let asker = createAsker(term.input, term.output);
+  const typedPromise = asker.ask('新しいパスワード: ');
+  await pause(30);
+  const shownAtStart = term.visible();
+  term.input.write('Himitsu-9w3xQ'); await pause(30);
+  term.input.write('\x7f'); await pause(30);            // Backspace
+  const shownWhileTyping = term.visible();
+  term.input.write('Z\r');
+  const typedAnswer = await typedPromise;
+  asker.close();
+  check('59. 再設定ツール: 画面からの入力では、案内（「新しいパスワード: 」）が表示され続け、打った文字は画面に出ない',
+    shownAtStart === '新しいパスワード: ' && shownWhileTyping === "新しいパスワード: " && typedAnswer === "Himitsu-9w3xZ" && !/Himitsu|9w3x/.test(term.all()),
+    JSON.stringify([shownAtStart, shownWhileTyping]));
+  term = fakeTerminal();
+  asker = createAsker(term.input, term.output);
+  const cancelled = asker.ask('新しいパスワード: ').then(() => '入力された', e => e.message);
+  await pause(30);
+  term.input.write('abc\x03');                           // Ctrl+C
+  const cancelResult = await Promise.race([cancelled, pause(2000).then(() => '応答なし')]);
+  asker.close();
+  check('60. 再設定ツール: 入力の途中で Ctrl+C を押すと、中止として扱われる（何も変更せずに終わる）', cancelResult === 'CANCELLED', cancelResult);
 
   try { fs.rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (_) { console.log(`テスト用フォルダを消せませんでした: ${workDir}`); }
   console.log(`\n結果: 合格 ${passed} / 不合格 ${failed}${failed ? '' : '（全項目合格）'}`);

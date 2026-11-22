@@ -50,7 +50,11 @@ function parseId(value) {
   if (value === undefined || value === null || value === '') return {};
   let id;
   if (typeof value === 'number') id = value;
-  else if (typeof value === 'string' && value.trim() !== '') id = Number(value);
+  else if (typeof value === 'string' && value.trim() !== '') {
+    // DB（sql.js）は文字列を NUL 文字のところで打ち切って読むので、"8\u0000x" は 8 として扱われる。記録も同じ読み方にそろえる
+    const nul = value.indexOf('\0');
+    id = Number(nul >= 0 ? value.slice(0, nul) : value);
+  }
   if (!Number.isSafeInteger(id) || id <= 0) return { raw: value };   // 数値として読めない（文字・配列・オブジェクトなど）
   return typeof value === 'number' || /^[1-9]\d{0,14}$/.test(value) ? { id } : { id, raw: value };
 }
@@ -59,9 +63,18 @@ function decodeSegment(text) {
   try { return decodeURIComponent(text); } catch (_) { return text; }
 }
 
+// 記録しない GET は、ここに挙げた参照用データだけ（患者の情報を含まないもの）。
+// 「表に無い GET は記録しない」という決め方にすると、表の書き方から外れたURLがルートに届いたとき、記録なしで
+// 患者の情報を返してしまう（実際に /api/pdf//?patient_id=8 のように / を重ねると、記録が1行も残らずに届いた。動作検証.md の S-04）。
+// そこで「記録しないものを挙げ、それ以外はすべて記録する」決め方にしている。
+const UNLOGGED_GET = /^\/api\/(wards|items|items\/prices|users\/password-policy)\/?$/i;
+
 // そのリクエストが記録の対象なら { action, target, targetRaw }、対象外なら null
-function classify(method, path) {
-  if (typeof path !== 'string' || !/^\/api\//i.test(path) || /^\/api\/auth(\/|$)/i.test(path)) return null;
+function classify(method, rawPath) {
+  if (typeof rawPath !== 'string') return null;
+  // Express は「/api/records//」のように / を重ねた書き方でも同じルートへ届けることがあるので、1つにそろえてから調べる
+  const path = rawPath.replace(/\/{2,}/g, '/');
+  if (!/^\/api\//i.test(path) || /^\/api\/auth(\/|$)/i.test(path)) return null;
   const m = method === 'HEAD' ? 'GET' : method;
   for (const [ruleMethod, pattern, action] of RULES) {
     if (ruleMethod !== m) continue;
@@ -71,8 +84,21 @@ function classify(method, path) {
     const { id, raw } = parseId(decodeSegment(match[1]));
     return { action, target: id, targetRaw: raw };
   }
-  // 上の表に無い GET（参照用データ）は記録しない。GET 以外は、表に無くても「その他」として残す
-  return m === 'GET' || m === 'OPTIONS' ? null : { action: 'other' };
+  if (m === 'OPTIONS' || (m === 'GET' && UNLOGGED_GET.test(path))) return null;
+  return { action: 'other' };   // 表に無いものは、GET も含めて「その他」として残す
+}
+
+// 細工した書き方のURLは、処理に進めない（auditMiddleware のあとに置くので、断ったことは記録に残る）。
+//   ・「//」を含むパス … Express が余分な / を読み飛ばして、同じルートへ届けてしまう
+//   ・%00（NUL 文字）  … DB が文字列を NUL のところで打ち切って読むため、「8%00x」が患者ID 8 として通ってしまう
+// どちらも、画面（public/js/app.js）が送ることはない。
+function rejectOddUrls(req, res, next) {
+  const path = typeof req.path === 'string' ? req.path : '';
+  if (!/^\/+api(\/|$)/i.test(path)) return next();
+  if (path.includes('//')) return res.status(404).json({ error: '見つかりません' });
+  const url = String(req.originalUrl || '');
+  if (/%00/i.test(url) || url.includes('\0')) return res.status(400).json({ error: 'リクエストの形式が正しくありません' });
+  next();
 }
 
 let lastErrorReportedAt = 0;
@@ -88,6 +114,18 @@ function auditMiddleware(req, res, next) {
   // 接続元も先に控える（途中で接続が切れた要求では、あとからは分からなくなる）
   let ipAtStart = '';
   try { ipAtStart = audit.clientIp(req); } catch (_) { /* 取れなければ空のまま */ }
+
+  // ログイン済みのユーザーの要求は、1件ずつ記録できる数（1分間に audit.USER_PER_MINUTE 件）までしか処理しない。
+  // 超えた分は、ここで断る（ルートには進ませない）。記録に残せない要求まで処理すると、要求を連打したあとで開いた
+  // 患者が記録に残らなくなるため。人が画面を操作して届く数ではない（全病棟の月次集計でも、1回の表示で「患者数＋1」件）。
+  if (actorAtStart) {
+    let accepted = true;
+    try { accepted = audit.reserveUser(actorAtStart, kind.action); } catch (_) { /* 数えられなかったときは通す（下で1件ずつ記録される） */ }
+    if (!accepted) {
+      res.set('Retry-After', '60');
+      return res.status(429).json({ error: '操作が多すぎます。1分ほど待ってから、もう一度お試しください。' });
+    }
+  }
 
   // 'close' は、応答を返し終えたときにも、途中で接続が切れたとき（PDFの作成中にタブを閉じた等）にも1回だけ起きる
   res.once('close', () => {
@@ -142,4 +180,4 @@ function auditMiddleware(req, res, next) {
   next();
 }
 
-module.exports = { auditMiddleware, classify, parseId };
+module.exports = { auditMiddleware, rejectOddUrls, classify, parseId };

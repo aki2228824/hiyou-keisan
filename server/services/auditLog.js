@@ -17,7 +17,15 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const MAX_STRING = 200;      // 1つの文字列の上限（超えた分は切る）
 const MAX_DETAIL = 2000;     // detail 全体の上限（JSON にしたときのバイト数）
 const ANON_PER_MINUTE = 120; // 未ログインの要求について、1分間に1件ずつ記録する上限（超えた分は件数だけを残す）
-const USER_PER_MINUTE = 1200; // ログイン済みのユーザー1人について、1分間に1件ずつ記録する上限（超えた分は、操作の種類ごとの件数と患者IDをまとめて残す）
+// ログイン済みのユーザー1人が、記録の対象になる要求を1分間に出せる上限（超えた分は処理せずに断り、断った件数だけを残す）。
+// 月次集計の画面は、表示のたびに「患者数＋1」件の要求を出す（120人なら121件）。全病棟の集計を3秒に1回のペースで
+// 1分間切り替え続けても届かない数（患者200人で約4,000件）より大きくしてある。.env の AUDIT_USER_PER_MINUTE で変えられる（600〜60000）。
+const DEFAULT_USER_PER_MINUTE = 6000;
+const USER_PER_MINUTE = (() => {
+  const raw = String(process.env.AUDIT_USER_PER_MINUTE ?? '').trim();
+  const n = raw === '' ? NaN : Math.floor(Number(raw));
+  return Number.isFinite(n) ? Math.min(Math.max(n, 600), 60000) : DEFAULT_USER_PER_MINUTE;
+})();
 let checkIntervalMs = 5000;    // 「ファイルがまだあるか」を確かめる間隔
 
 let dir = null;              // 保存先フォルダ（init() で決まる。それまでは何も書かない）
@@ -178,7 +186,8 @@ function sanitize(value, depth = 0) {
     let n = 0;
     for (const [key, v] of Object.entries(value)) {
       if (++n > 50) { out['…'] = '（以下省略）'; break; }
-      out[cut(key, 50)] = /pass/i.test(key) ? '***' : sanitize(v, depth + 1);
+      // パスワードらしい名前の項目は、値を記録しない（このアプリが使うのは password だけだが、pwd・token のような名前で送られた値も伏せる）
+      out[cut(key, 50)] = /pass|pwd|secret|token/i.test(key) ? '***' : sanitize(v, depth + 1);
     }
     return out;
   }
@@ -215,39 +224,52 @@ function flushAnonSkipped() {
   anonSkipped = 0;
   write({ user: null, action: 'audit.skipped', detail: { count, note: '未ログインの要求が多すぎたため、1件ずつの記録を省略した件数' } });
 }
-// ログイン済みのユーザーについても、1分間に USER_PER_MINUTE 件を超えた分は1件ずつは書かず、
-// 「操作の種類ごとの件数」と「対象になった患者ID」をまとめて1行（audit.skipped）にする。
-// 患者IDは必ず残すので、要求を連打して「どの患者を見たか」を隠すことはできない。
-const userWindows = new Map();   // uid → { start, used, skipped, actions: {種類: 件数}, patients: Set, name }
+// ログイン済みのユーザーは、記録の対象になる要求を1分間に USER_PER_MINUTE 件まで出せる（人が画面を操作して届く数ではない）。
+// 超えた分は、middleware/audit.js が処理に入る前に断る（429）。こうしておくと、
+//   ・処理された要求は、必ず1件ずつ記録に残る（要求を連打して「どの患者を見たか」を記録から消すことができない）
+//   ・1人のユーザーが増やせるログの量に上限がある
+// 断った件数は、操作の種類ごとにまとめて1行（audit.skipped）にする。断った要求では、データの表示も変更も行われていない。
+//
+// 以前は、超えた分も処理したうえで「操作の種類ごとの件数と、対象の患者ID（500件まで）」を1行にまとめていた。
+// それだと、関係のない患者IDを500件以上送ってから本命の患者を開けば、その患者のIDが記録に残らなかった
+// （2026-11-22 の点検で確認。動作検証.md の S-04）。記録に残せない要求は、処理しないのが確実。
+const userWindows = new Map();   // uid → { start, used, skipped, actions: {種類: 件数}, name, timer }
 function flushUser(uid) {
   const w = userWindows.get(uid);
   if (!w || !w.skipped) return;
-  const patients = [...w.patients];
   write({
     user: w.name, uid, action: 'audit.skipped',
-    detail: { count: w.skipped, actions: w.actions, patient_ids: patients.slice(0, 500), patient_ids_more: Math.max(0, patients.length - 500) || undefined,
-      note: '同じユーザーの操作が1分間に多すぎたため、1件ずつの記録を省略した分（操作の種類ごとの件数と、対象の患者ID）' },
+    detail: { count: w.skipped, actions: w.actions, refused: true,
+      note: '同じユーザーの要求が1分間に多すぎたため、処理せずに断った件数（断った要求では、データの表示・変更は行われていない）' },
   });
-  w.skipped = 0; w.actions = {}; w.patients = new Set();
+  w.skipped = 0; w.actions = {};
 }
-function allowUser(actor, action, patientId, now = Date.now()) {
+/**
+ * ログイン済みのユーザーの要求を、処理に進めてよいか。進めてよければ、1分間の枠を1つ使って true を返す。
+ * 枠を使い切っていたら、断った件数として数えて false を返す（呼び出し側は、その要求を処理せずに断ること）。
+ * @param {{ id: any, username?: string }} actor  セッションのユーザー
+ * @param {string} action  操作の種類（断った件数の内訳に使う）
+ */
+function reserveUser(actor, action, now = Date.now()) {
   let w = userWindows.get(actor.id);
-  if (!w || now - w.start >= 60000) {
-    flushUser(actor.id);
-    w = { start: now, used: 0, skipped: 0, actions: {}, patients: new Set(), name: actor.username, timer: null };
+  // now < w.start: サーバーの時計が戻された場合。数え直さないと、戻された時間のあいだ枠が回復せず、普通の利用まで断ってしまう
+  if (!w || now - w.start >= 60000 || now < w.start) {
+    flushUser(actor.id);   // 前の1分間に断った分があれば、ここで書き出す
+    if (w && w.timer) clearTimeout(w.timer);
+    w = { start: now, used: 0, skipped: 0, actions: {}, name: actor.username, timer: null };
     userWindows.set(actor.id, w);
     if (userWindows.size > 1000) for (const [id, x] of userWindows) if (now - x.start >= 120000 && !x.skipped) userWindows.delete(id);
   }
   if (w.used < USER_PER_MINUTE) { w.used++; return true; }
   w.skipped++;
   w.actions[action] = (w.actions[action] || 0) + 1;
-  if (patientId !== undefined && patientId !== null) w.patients.add(patientId);
+  // 続きの要求が来なくても、断った件数は必ず残す
   if (!w.timer) { w.timer = setTimeout(() => { w.timer = null; flushUser(actor.id); }, 60000); w.timer.unref(); }
   return false;
 }
 
 function allowAnonymous(now = Date.now()) {
-  if (now - anonWindowStart >= 60000) {
+  if (now - anonWindowStart >= 60000 || now < anonWindowStart) {   // 後ろの条件は、サーバーの時計が戻された場合
     flushAnonSkipped();
     anonWindowStart = now;
     anonUsed = 0;
@@ -269,14 +291,14 @@ function allowAnonymous(now = Date.now()) {
  */
 function record(req, action, fields = {}) {
   const actor = req.session?.user || fields.actor || null;
-  // fields.always: 件数の上限にかかわらず必ず残す記録（ロックの仕組みで回数が限られている、実在するユーザーへのログイン失敗など）
-  if (!fields.always) {
-    if (!actor) { if (!allowAnonymous()) return false; }
-    else if (!allowUser(actor, action, fields.patient_id !== undefined ? fields.patient_id : fields.patient_id_raw)) return false;
-  }
   // fields.user（ログイン画面に入力されたユーザーIDなど）を記録するときは、uid とロールを付けない。
   // 別の人がログイン済みのブラウザーから試した場合に、その人の uid・ロールが「入力されたID」のものに見えてしまうため
   const named = fields.user !== undefined;
+  // 件数の上限で省略するのは、だれでも好きなだけ起こせる記録（未ログインの要求と、ログイン画面に入力されたIDの記録）だけ。
+  // ログイン済みのユーザーの操作は、ここでは省略しない（多すぎる要求は、処理に入る前に middleware/audit.js が
+  // reserveUser() で断っている。処理した操作の記録を省くと、「だれが・どの患者に・何をしたか」が残らなくなる）。
+  // fields.always: 上限にかかわらず必ず残す記録（ロックの仕組みで回数が限られている、実在するユーザーへのログイン失敗など）
+  if (!fields.always && (!actor || named) && !allowAnonymous()) return false;
   const entry = {
     user: named ? (fields.user === null ? null : safeText(fields.user, 64)) : (actor ? actor.username : null),
     uid: !named && actor ? actor.id : undefined,
@@ -309,10 +331,15 @@ function recordSystem(action, detail) {
 function kindsOf(row) {
   const action = String(row.action || '');
   const kinds = [];
-  if (action.startsWith('login.') || action === 'logout' || action === 'users.unlock') kinds.push('auth');
+  const offlineReset = action === 'users.password_reset_offline';   // サーバー上のツール（tools/reset-password.js）によるパスワードの再設定
+  if (action.startsWith('login.') || action === 'logout' || action === 'users.unlock' || offlineReset) kinds.push('auth');
   if (/\.(view|list)$/.test(action) || action === 'pdf.export') kinds.push('view');
-  if (/\.(create|update|delete|save|unlock|run)$/.test(action) || action === 'other') kinds.push('change');
-  if (Number(row.status) >= 400 || action === 'audit.skipped') kinds.push('denied');
+  if (/\.(create|update|delete|save|unlock|run)$/.test(action) || action === 'other' || offlineReset) kinds.push('change');
+  // 記録の欠落（audit.gap）とサーバーの警告には状態コードが無いので、種類で「断られた操作・エラー」に入れる
+  if (Number(row.status) >= 400 || ['audit.skipped', 'audit.gap', 'server.warning'].includes(action)) kinds.push('denied');
+  // サーバー側の出来事（利用者の画面操作ではないもの）: 起動・警告・記録の省略と欠落・ツールによる再設定。
+  // 月次の確認で「心当たりのない起動や再設定が無いか」を見るための分類（以前はどの分類にも入らず、絞り込むと表示されなかった）
+  if (action.startsWith('server.') || action === 'audit.skipped' || action === 'audit.gap' || offlineReset) kinds.push('system');
   return kinds;
 }
 
@@ -334,7 +361,7 @@ function monthsBetween(from, to) {
  * @param {{ from: string, to: string, user?: string, kind?: string, q?: string, limit: number }} cond  from / to は 'YYYY-MM-DD'（両端を含む）
  * @returns {Promise<{ rows: object[], total: number, truncated: boolean }>} total = 条件に合った件数
  */
-async function read({ from, to, user, kind, q, limit, patientIds }) {
+async function read({ from, to, user, kind, q, limit, patientIds, patientId }) {   // patientId: その患者IDの記録だけ（数値）
   if (!dir) return { rows: [], total: 0, truncated: false };
   const needle = q ? String(q).toLowerCase() : '';
   const ring = new Array(limit);   // 条件に合ったもののうち、新しい limit 件だけを覚えておく
@@ -355,9 +382,14 @@ async function read({ from, to, user, kind, q, limit, patientIds }) {
       if (needle) {
         // キーワードは、行の文字のほかに「患者の氏名」でも探す（行には患者IDしか入っていないため）。
         // 操作ログを表示した記録そのもの（検索に使った言葉が入っている）は、キーワードでは拾わない
-        if (row.action === 'audit.view') continue;
-        if (!textHit && !(patientIds && patientIds.has(row.patient_id))) continue;
+        if (row.action === 'audit.view') {
+          // 検索した言葉そのもの（detail.q）に当たっただけなら拾わない。それ以外の部分（ユーザーID・接続元など）に当たった記録は拾う
+          // （以前は、キーワードを入れると操作ログの表示の記録がすべて消えていた。接続元で調べたときに、件数が合わなくなる）
+          const { q: _q, ...rest } = row.detail && typeof row.detail === 'object' ? row.detail : {};
+          if (!JSON.stringify({ ...row, detail: rest }).toLowerCase().includes(needle)) continue;
+        } else if (!textHit && !(patientIds && patientIds.has(row.patient_id))) continue;
       }
+      if (patientId !== undefined && row.patient_id !== patientId) continue;
       if (user && row.user !== user) continue;
       if (kind && !kindsOf(row).includes(kind)) continue;
       ring[total % limit] = row;
@@ -377,7 +409,7 @@ function status() {
 }
 
 module.exports = {
-  init, write, record, recordSystem, read, status, clientIp, localIso, kindsOf,
+  init, write, record, recordSystem, read, status, clientIp, localIso, kindsOf, reserveUser,
   // 自己テスト（tools/selftest-security.js）用
   safeText, ANON_PER_MINUTE, USER_PER_MINUTE,
   _test: {

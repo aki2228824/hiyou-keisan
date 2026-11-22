@@ -29,6 +29,7 @@ const TEST_PASSWORD = 'Kensa-you-9w3x7k2m';     // テスト中に作るユー�
 const NEW_PASSWORD = 'Henkou-go-5t2r8y4u';      // パスワード変更の確認用
 const WRONG_PASSWORD = 'chigau-pasuwa-do-0000';
 const MAX_FAILURES = 5;                         // このテストで起動するサーバーの設定（下の env で指定する）
+const USER_PER_MINUTE = 1200;                   // 同上。同じユーザーが1分間に出せる要求の上限（既定は 6000。テストを短くするために下げる）
 
 // 動作検証.md の P-02 に記録した金額（開発用テストデータの 2026年8月分）
 const RECORDED = [
@@ -111,6 +112,18 @@ function client(ip, headers = {}) {
 const withCookie = (cookie, url) => fetch(BASE + url, { headers: { Cookie: cookie } });
 const loginAs = (c, username, password) => c('POST', '/api/auth/login', { username, password });
 
+// 非常用のパスワード再設定ツール（tools/reset-password.js）を、指定した設定で実行する。stdin に流した文字が入力になる
+function runResetTool(args, env, input = '') {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, [path.join(APP, 'tools', 'reset-password.js'), ...args], { cwd: APP, env: { ...process.env, ...env } });
+    let out = '';
+    child.stdout.on('data', d => (out += d));
+    child.stderr.on('data', d => (out += d));
+    child.on('exit', code => resolve({ code, out }));
+    child.stdin.end(input);
+  });
+}
+
 (async () => {
   const src = sourceDbPath();
   const hasSource = fs.existsSync(src) && fs.statSync(src).size > 0;
@@ -138,6 +151,7 @@ const loginAs = (c, username, password) => c('POST', '/api/auth/login', { userna
       ...process.env, DB_PATH: copy, PORT: String(PORT), HOST: '127.0.0.1', EXPORT_ENABLED: 'false',
       AUDIT_LOG_DIR: auditDir, TRUST_PROXY: 'loopback',
       PASSWORD_MIN_LENGTH: '13', LOGIN_MAX_FAILURES: String(MAX_FAILURES), LOGIN_LOCK_MINUTES: '15',
+      AUDIT_USER_PER_MINUTE: String(USER_PER_MINUTE),
     },
   });
   let log = '', exited = false;
@@ -297,6 +311,20 @@ const loginAs = (c, username, password) => c('POST', '/api/auth/login', { userna
     check('実在しないユーザーIDでも、同じ回数でロックの応答になる',
       ghost.slice(0, MAX_FAILURES - 1).every(s => s === 401) && ghost.slice(MAX_FAILURES - 1).every(s => s === 429), ghost.join(','));
 
+    // 登録できない文字（改行など）を含むユーザーIDは、照合せずに断る。
+    // 「実在のID＋改行＋…」で失敗を重ねても、その実在のIDがロック中と表示されることはない
+    const crafted = client('10.9.0.68'), craftedStatuses = [];
+    for (let i = 0; i < MAX_FAILURES + 1; i++) craftedStatuses.push((await loginAs(crafted, 'smoke_staff\nJUNK', WRONG_PASSWORD)).status);
+    const staffNow = (await (await admin('GET', '/api/users')).json()).find(u => u.username === 'smoke_staff');
+    check('改行を含むユーザーIDでのログインは 400 で断られ、元のユーザーが「ロック中」と表示されることもない',
+      craftedStatuses.every(s => s === 400) && staffNow && staffNow.locked_seconds === 0, craftedStatuses.join(','));
+
+    // 非常用のパスワード再設定ツールは、アプリが動いている間は何も変更しない
+    const toolEnv = { DB_PATH: copy, PORT: String(PORT), HOST: '127.0.0.1', AUDIT_LOG_DIR: auditDir, EXPORT_ENABLED: 'false' };
+    const whileRunning = await runResetTool([login.username], toolEnv, `${NEW_PASSWORD}\n${NEW_PASSWORD}\n`);
+    check('再設定ツール：アプリが動いている間は、実行を断る（終了コード 1）', whileRunning.code === 1 && /アプリが動いています/.test(whileRunning.out),
+      whileRunning.out.trim().split('\n')[0]);
+
     // リバースプロキシ（HTTPS終端）経由を模した要求では、Cookie に Secure が付く
     const viaProxy = client('192.168.1.77', { 'X-Forwarded-Proto': 'https' });
     const proxied = await loginAs(viaProxy, 'smoke_staff', TEST_PASSWORD);
@@ -332,6 +360,36 @@ const loginAs = (c, username, password) => c('POST', '/api/auth/login', { userna
     ];
     // 検索条件（URL）と本文に別々の患者IDを書いても、記録されるのは実際に保存された患者
     const decoy = await staff('POST', '/api/records?patient_id=999999', { ...rec, record_date: '2026-11-02' });
+
+    // 細工した書き方のURL: / を重ねる（以前は、記録が1行も残らないまま患者の情報が返った）、%00 を付ける（以前は、記録から患者IDが抜けた）
+    const pidQuery = `patient_id=${patients[0].id}&year=2026&month=8`;
+    const oddUrls = [
+      await viewer('GET', `/api/records//?${pidQuery}`), await viewer('GET', `/api/records//summary?${pidQuery}`),
+      await viewer('GET', `/api/pdf//?${pidQuery}`), await viewer('GET', '/api/patients//'), await admin('GET', '/api/users//'),
+    ];
+    const oddBodies = await Promise.all(oddUrls.map(r => r.text()));
+    check('/ を重ねたURL（/api/records//、/api/pdf// など）は 404 で断られ、患者の情報は返らない',
+      oddUrls.every(r => r.status === 404) && oddBodies.every(b => b.length < 200 && !b.startsWith('%PDF')), oddUrls.map(r => r.status).join(','));
+    const nulUrl = await viewer('GET', `/api/meal-prices?patient_id=${patients[0].id}%00x&year=2026&month=8`);
+    const noPatient = await viewer('GET', '/api/meal-prices?year=2026&month=8');
+    const oddActive = await admin('PUT', `/api/users/${viewerRow.id}`, { username: 'smoke_viewer', role: 'viewer', active: { toString: 1 } });
+    check('%00 を含むURL・指定の欠けた食事単価の要求・状態にオブジェクトを指定した更新は 400（データを返さず、500 にもならない）',
+      nulUrl.status === 400 && noPatient.status === 400 && oddActive.status === 400, [nulUrl.status, noPatient.status, oddActive.status].join(','));
+    const headView = await viewer('HEAD', `/api/records?${pidQuery}`);
+
+    // 無効にしたユーザーは、ログイン中の画面も新しいログインも使えなくなる。成功するログインを続けても、失敗の回数にはならない
+    check('確認用のユーザー作成', (await mk('smoke_off', 'viewer')) === 200);
+    const offClient = client('10.9.5.1'), offLogins = [];
+    for (let i = 0; i < MAX_FAILURES + 1; i++) offLogins.push((await loginAs(offClient, 'smoke_off', TEST_PASSWORD)).status);
+    const offRow = (await (await admin('GET', '/api/users')).json()).find(u => u.username === 'smoke_off');
+    check(`成功するログインを ${MAX_FAILURES + 1} 回続けても、ロックされない`, offLogins.every(s => s === 200) && offRow.locked_seconds === 0, offLogins.join(','));
+    check('ユーザーを無効にすると、そのユーザーのログイン中の画面は 401 になり、新しいログインもできない',
+      (await admin('PUT', `/api/users/${offRow.id}`, { username: 'smoke_off', role: 'viewer', active: 0 })).status === 200 &&
+      (await offClient('GET', '/api/wards')).status === 401 && (await loginAs(client('10.9.5.2'), 'smoke_off', TEST_PASSWORD)).status === 401);
+    // 患者の削除の記録には、削除した患者の氏名が残る
+    await admin('POST', '/api/patients', { ward_id: wards[0].id, name: 'スモーク削除確認', room: '', beneficiary_no: '' });
+    const doomed = (await (await admin('GET', '/api/patients')).json()).find(p => p.name === 'スモーク削除確認');
+    const deleted = doomed ? await admin('DELETE', `/api/patients/${doomed.id}`) : { status: 0 };
 
     // 書式の壊れたログインの要求を送っても、サーバーのエラーログにパスワードが出ない
     const broken = await fetch(BASE + '/api/auth/login', {
@@ -382,9 +440,28 @@ const loginAs = (c, username, password) => c('POST', '/api/auth/login', { userna
     check('操作ログ：URL と本文に別々の患者IDを書いても、実際に保存された患者が記録される（URL の値も残る）',
       decoy.status === 200 && has('records.save', r => r.patient_id === patients[0].id && r.detail && r.detail.record_date === '2026-11-02' &&
         r.detail._query && r.detail._query.patient_id === '999999'));
+    check('操作ログ：/ を重ねたURLの要求は「断った」こととして、操作の種類と患者IDつきで残る。HEAD での表示、削除した患者の氏名も残る',
+      has('records.view', r => r.status === 404 && r.patient_id === patients[0].id && r.path === '/api/records//') &&
+      has('pdf.export', r => r.status === 404 && r.patient_id === patients[0].id) && has('users.list', r => r.status === 404) &&
+      has('mealprices.view', r => r.status === 400 && r.patient_id === patients[0].id) &&
+      headView.status === 200 && has('records.view', r => r.method === 'HEAD' && r.status === 200 && r.patient_id === patients[0].id) &&
+      deleted.status === 200 && has('patients.delete', r => r.status === 200 && r.patient_id === doomed.id && r.detail && r.detail.name === 'スモーク削除確認'));
+    check('操作ログ：患者IDでの絞り込み、期間・件数の上限', await (async () => {
+      const byPatient = await (await admin('GET', `/api/audit?limit=5000&patient_id=${doomed.id}`)).json();
+      const none = await (await admin('GET', '/api/audit?from=2020-01-01&to=2020-01-02')).json();
+      const tooLong = await admin('GET', '/api/audit?from=2024-01-01&to=2026-01-01');
+      const badPid = await admin('GET', '/api/audit?patient_id=abc');
+      const capped = await (await admin('GET', '/api/audit?limit=999999')).json();
+      return byPatient.rows.length >= 1 && byPatient.rows.every(x => x.patient_id === doomed.id) && none.rows.length === 0 &&
+        tooLong.status === 400 && badPid.status === 400 && capped.rows.length <= 5000;
+    })());
     check('操作ログ：絞り込み（断られた操作・エラーだけ）', await (async () => {
       const r = await (await admin('GET', '/api/audit?kind=denied&limit=5000')).json();
       return r.rows.length > 0 && r.rows.every(x => x.status >= 400);
+    })());
+    check('操作ログ：絞り込み（サーバーの出来事）に、サーバーの起動が出る', await (async () => {
+      const r = await (await admin('GET', '/api/audit?kind=system&limit=5000')).json();
+      return r.rows.some(x => x.action === 'server.start') && r.rows.every(x => !/^(login|records|patients)\./.test(x.action));
     })());
     check('操作ログ：キーワードに患者の氏名を入れると、その患者の表示・保存の記録が見つかる', await (async () => {
       const r = await (await admin('GET', '/api/audit?limit=5000&q=' + encodeURIComponent(patients[0].name))).json();
@@ -395,6 +472,40 @@ const loginAs = (c, username, password) => c('POST', '/api/auth/login', { userna
     check('操作ログ：ファイルにパスワードが書かれていない',
       auditText.length > 0 && ![TEST_PASSWORD, NEW_PASSWORD, login.password, WEAK_PASSWORD, WRONG_PASSWORD, 'Test-pass-1', 'Morenai-pasuwa-do-77'].some(p => auditText.includes(p)),
       `${auditText.split('\n').length - 1} 行`);
+
+    // ログイン済みのユーザーが要求を連打しても、「記録に残らない表示・出力」は起きない。
+    // 1分あたりの上限までは1件ずつ記録され、超えた分は処理されずに断られる（429）。
+    // （以前は、超えた分も処理して「まとめて1行」にしていたため、連打のあとで開いた患者が記録に残らなかった。動作検証.md の S-04）
+    check('連打の確認に使うユーザー作成', (await mk('smoke_flood', 'viewer')) === 200);
+    const flooder = client('10.9.4.1');
+    await loginAs(flooder, 'smoke_flood', TEST_PASSWORD);
+    let listOk = 0, sent = 0;
+    await Promise.all(Array.from({ length: 30 }, async () => {
+      while (sent < USER_PER_MINUTE) {
+        sent++;
+        const r = await flooder('GET', '/api/patients');
+        if (r.status === 200) listOk++;
+        await r.arrayBuffer();
+      }
+    }));
+    const target = `patient_id=${pdfTarget.id}&year=${pdfTarget.year}&month=${pdfTarget.month}`;
+    const refused = [
+      await flooder('GET', '/api/records?' + target),
+      await flooder('GET', '/api/records/summary?' + target),
+      await flooder('GET', '/api/pdf?' + target),
+    ];
+    const refusedBodies = await Promise.all(refused.map(r => r.text()));
+    await sleep(1300);   // 書き込みがファイルに確定するのを待つ
+    const floodLog = readAudit().split('\n').filter(l => l.includes('"smoke_flood"'))
+      .map(l => { try { return JSON.parse(l); } catch (_) { return {}; } }).filter(r => r.user === 'smoke_flood');
+    check(`同じユーザーが1分間に ${USER_PER_MINUTE} 件を超える要求を送ると、超えた分は処理されずに断られる（429。実績・月次集計・PDF は返らない）`,
+      listOk === USER_PER_MINUTE && refused.every(r => r.status === 429) && refusedBodies.every(b => b.length < 300 && !b.startsWith('%PDF')),
+      `一覧 ${listOk} 件は成功 → その後の3件は ${refused.map(r => r.status).join(',')}`);
+    check('受け付けた要求はすべて1件ずつ記録され、断った要求は「表示した」と記録されない（記録に残らない表示・出力は起きない）',
+      floodLog.filter(r => r.action === 'patients.list' && r.status === 200).length === USER_PER_MINUTE &&
+      !floodLog.some(r => ['records.view', 'summary.view', 'pdf.export'].includes(r.action)),
+      `一覧の記録 ${floodLog.filter(r => r.action === 'patients.list').length} 行`);
+    check('連打したユーザー以外は、その間も普通に使える', (await admin('GET', '/api/patients')).status === 200);
 
     // 未ログインの要求を大量に送られても、1件ずつ記録するのは1分あたり一定の件数までで、本文は記録しない
     // （だれでも送れる要求でディスクを埋められないように）。この確認は記録の枠を使い切るので、最後に行う。
@@ -415,6 +526,28 @@ const loginAs = (c, username, password) => c('POST', '/api/auth/login', { userna
   } finally {
     server.kill();
     for (let i = 0; i < 40 && !exited; i++) await sleep(125);
+
+    // 非常用のパスワード再設定ツール（アプリを止めた状態で実行する道具なので、サーバーを止めたあとに確かめる）
+    try {
+      const toolEnv = { DB_PATH: copy, PORT: String(PORT), HOST: '127.0.0.1', AUDIT_LOG_DIR: auditDir, EXPORT_ENABLED: 'false' };
+      const missing = path.join(work, 'no-such-folder', 'hiyou.db');
+      const noDb = await runResetTool(['admin'], { ...toolEnv, DB_PATH: missing }, 'x\nx\n');
+      check('再設定ツール：DB が見つからないときは中止し、DB を新しく作らない',
+        noDb.code === 1 && /DBファイルが見つかりません/.test(noDb.out) && !fs.existsSync(path.dirname(missing)), noDb.out.trim().split('\n')[0]);
+      const RESET_PASSWORD = 'Saisettei-4n8v2c6x1';
+      const reset = await runResetTool([login.username], toolEnv, `${RESET_PASSWORD}\n${RESET_PASSWORD}\n`);
+      const SQL = await require('sql.js')();
+      const after = new SQL.Database(fs.readFileSync(copy));
+      const hash = after.exec('SELECT password_hash FROM users WHERE username=?', [login.username])[0].values[0][0];
+      after.close();
+      check('再設定ツール：アプリを止めた状態では、パスワードを設定し直せる（操作ログにも残り、パスワードは書かれない）',
+        reset.code === 0 && require('bcryptjs').compareSync(RESET_PASSWORD, hash) &&
+        readAudit().includes('"users.password_reset_offline"') && !readAudit().includes(RESET_PASSWORD),
+        reset.out.trim().split('\n').slice(-2)[0]);
+    } catch (e) {
+      check('再設定ツールの確認が例外なく完了', false, e.message);
+    }
+
     if (hasSource) check('元のDBファイルは変更されていない', sha256(src) === before);
     tidyUp();
     if (fs.existsSync(work)) console.log(`     作業用フォルダを消せませんでした。手で削除してください: ${work}`);

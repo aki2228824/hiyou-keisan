@@ -89,8 +89,11 @@ function check(password, opts = {}) {
   if (username.length >= 3 && lower.includes(username))
     errors.push('ユーザーIDを含めないでください');
   const plain = unleet(lower);
-  if (WEAK_WORDS.some(w => lower.includes(w) || plain.includes(w)))
-    errors.push('推測されやすい文字列（password、qwerty、admin など。pa55word のように数字や記号で置き換えたものも含む）を含めないでください');
+  // どの語に当たったのかを伝える（「password、qwerty、admin など」だけでは、kaigo や byouin を含めて断られた理由が分からない）
+  const weak = WEAK_WORDS.find(w => lower.includes(w) || plain.includes(w));
+  if (weak)
+    errors.push(`推測されやすい文字列「${weak}」を含めないでください（password・admin などのよくある語、hiyou・kaigo・byouin などの施設や業務に関係する語、` +
+      'qwerty などのキーボードの並び。pa55word のように数字や記号で置き換えたものも含む）');
   if (/(.)\1{3,}/.test(password) || hasSequentialRun(lower, 5))
     errors.push('同じ文字の4回以上の連続（aaaa）や、順番に並んだ文字（12345、abcde）を含めないでください');
   if (isRepeatedPattern(lower))

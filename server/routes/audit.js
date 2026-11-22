@@ -7,7 +7,7 @@ const { requireRole } = require('../middleware/auth');
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 5000;
 const MAX_RANGE_DAYS = 366;
-const KINDS = ['auth', 'view', 'change', 'denied'];
+const KINDS = ['auth', 'view', 'change', 'denied', 'system'];
 
 // 'YYYY-MM-DD' で、実在する日付か
 function isRealDate(str) {
@@ -20,8 +20,10 @@ function isRealDate(str) {
  * GET /api/audit  操作ログの表示（管理者のみ）。新しい順に返す。
  *   ?from=YYYY-MM-DD&to=YYYY-MM-DD  期間（両端を含む。省略時はサーバーの今日）
  *   ?user=ユーザーID                 そのユーザーの記録だけ
- *   ?kind=auth|view|change|denied    ログイン・認証／表示・出力／登録・変更・削除／断られた操作・エラー
- *   ?q=文字列                        その文字列を含む記録だけ（大文字・小文字は区別しない）
+ *   ?kind=auth|view|change|denied|system
+ *                                    ログイン・認証／表示・出力／登録・変更・削除／断られた操作・エラー／サーバーの出来事
+ *   ?q=文字列                        その文字列を含む記録だけ（大文字・小文字は区別しない。患者の氏名でも探せる）
+ *   ?patient_id=数字                 その患者IDの記録だけ
  *   ?limit=件数                      既定 500、最大 5000
  */
 router.get('/', requireRole('admin'), async (req, res, next) => {
@@ -60,7 +62,13 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
     const patientIds = new Set();
     if (needle) for (const [id, name] of names) if (String(name).toLowerCase().includes(needle)) patientIds.add(id);
 
-    const result = await audit.read({ from, to, user: req.query.user || '', kind, q, limit, patientIds });
+    // 患者IDでの絞り込み。氏名での検索は「いま登録されている氏名」でしか探せないので、
+    // 削除した患者・氏名を変える前の記録を調べるときは、患者ID（患者の削除・変更の記録に出ている）で探す
+    const pidText = req.query.patient_id == null ? '' : req.query.patient_id;
+    if (pidText !== '' && (typeof pidText !== 'string' || !/^[1-9]\d{0,14}$/.test(pidText)))
+      return res.status(400).json({ error: '患者ID は数字で指定してください' });
+
+    const result = await audit.read({ from, to, user: req.query.user || '', kind, q, limit, patientIds, patientId: pidText ? Number(pidText) : undefined });
 
     for (const row of result.rows) {
       if (row.patient_id != null && names.has(row.patient_id)) row.patient_name = names.get(row.patient_id);
