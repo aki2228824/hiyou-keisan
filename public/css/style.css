@@ -495,3 +495,29 @@ table.master-table {
   text-decoration: none;
 }
 .pdf-btn:hover { background: #c0392b; }
+
+/* ---- ログイン時の注意・パスワードの基準・ロック・操作ログ ---- */
+.login-error { white-space: pre-line; }
+.notice-bar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  background: #fff8e1;
+  border-bottom: 1px solid #f0c36d;
+  color: #6b4e00;
+  padding: 8px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.notice-bar span { white-space: pre-line; }
+.policy-note { font-size: 12px; color: #555; margin: 8px 0; line-height: 1.7; }
+.lock-note { color: #c00; font-size: 12px; margin-top: 4px; display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.audit-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 4px; font-size: 13px; }
+.audit-toolbar input, .audit-toolbar select { padding: 4px; border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
+.audit-warning { background: #fdecea; color: #c00; padding: 8px 12px; border-radius: 4px; font-size: 13px; margin: 8px 0; }
+.audit-count { font-size: 12px; color: #555; margin: 6px 0; }
+.audit-wrap { overflow-x: auto; }
+table.audit-table td { font-size: 12px; white-space: nowrap; }
+table.audit-table td.audit-detail { white-space: normal; word-break: break-all; min-width: 200px; max-width: 480px; }
+table.audit-table tr.audit-denied td { background: #fff5f5; }

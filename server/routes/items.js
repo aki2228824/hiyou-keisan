@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { getItemPriceMap, toPrice, toPositiveInt, parseYearMonth } = require('../services/prices');
+const { getItemPriceMap, toPrice, toPositiveInt, parseYearMonth, isPlainValue } = require('../services/prices');
 const { requireRole } = require('../middleware/auth');
 
 router.get('/', (req, res) => {
@@ -31,6 +31,8 @@ router.put('/:id', requireRole('admin'), (req, res) => {
 // 単価一覧取得（指定月になければ直近の設定を引き継ぐ）
 router.get('/prices', (req, res) => {
   const { year, month } = req.query;
+  if (![year, month].every(isPlainValue))
+    return res.status(400).json({ error: '検索条件の指定が正しくありません' });
   const priceMap = getItemPriceMap(year, month);
   const rows = db.query('SELECT id, name, sort_order, active FROM items ORDER BY sort_order, id')
     .map(r => ({ ...r, unit_price: priceMap[r.id] ?? 0 }));
@@ -39,14 +41,15 @@ router.get('/prices', (req, res) => {
 
 router.delete('/:id', requireRole('admin'), (req, res) => {
   const id = req.params.id;
-  if (!db.query('SELECT id FROM items WHERE id=?', [id])[0])
-    return res.status(404).json({ error: '物品が見つかりません' });
+  const target = db.query('SELECT id, name FROM items WHERE id=?', [id])[0];
+  if (!target) return res.status(404).json({ error: '物品が見つかりません' });
   // 関連データごと「全部消す／何も消さない」のどちらかにする（途中で止まって一部だけ消えた状態を残さない）
   db.transaction(() => {
     db.run('DELETE FROM records WHERE item_id=?', [id]);
     db.run('DELETE FROM prices WHERE item_id=?', [id]);
     db.run('DELETE FROM items WHERE id=?', [id]);
   });
+  res.locals.auditDetail = { name: target.name };   // 操作ログに、削除した物品名を残す
   res.json({ ok: true });
 });
 

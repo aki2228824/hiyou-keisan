@@ -37,6 +37,12 @@
   </div>
 </header>
 
+<!-- お知らせ（ログインしたパスワードが基準を満たしていない、など。閉じるまで表示） -->
+<div id="notice-bar" class="notice-bar hidden">
+  <span id="notice-text"></span>
+  <button onclick="hideNotice()" class="btn-sm">閉じる</button>
+</div>
+
 <main>
   <!-- 日次入力ページ -->
   <section id="page-input" class="page">
@@ -78,11 +84,13 @@
       <button onclick="showMasterTab('items')" class="tab-btn" id="mtab-items">物品管理</button>
       <button onclick="showMasterTab('prices')" class="tab-btn" id="mtab-prices">日用品単価</button>
       <button onclick="showMasterTab('users')" class="tab-btn" id="mtab-users">ユーザー管理</button>
+      <button onclick="showMasterTab('audit')" class="tab-btn" id="mtab-audit">操作ログ</button>
     </div>
     <div id="master-patients" class="master-tab"></div>
     <div id="master-items" class="master-tab hidden"></div>
     <div id="master-prices" class="master-tab hidden"></div>
     <div id="master-users" class="master-tab hidden"></div>
+    <div id="master-audit" class="master-tab hidden"></div>
   </section>
 </main>
 

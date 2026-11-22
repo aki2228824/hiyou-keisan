@@ -1,0 +1,183 @@
+// API へのリクエストを操作ログに記録する（services/auditLog.js）。
+//
+// 記録するもの:
+//   ・GET 以外のすべての API（登録・変更・削除・出力の実行）。断られたもの（400 / 401 / 403 / 404 / 409 / 500）も含む
+//   ・GET のうち、患者の情報・ユーザーの一覧・操作ログそのものを表示／出力するもの（下の表で GET になっているもの）
+// 記録しないもの:
+//   ・画面のファイル（HTML / CSS / JS）、病棟・物品・単価の一覧のような参照用データの GET
+//   ・/api/auth/…（ログイン・ログアウトは routes/auth.js が、入力されたユーザーIDなどを選んで記録する）
+//
+// この処理は応答を返したあとに動くので、ここで例外が出ると受け止める場所が無く、サーバー全体が止まる。
+// 送られてくる値は何が入っているか分からない（?patient_id[toString]=1 のような細工もできる）ので、
+// 値を文字列や数値に変えるところは例外が出ない書き方にし、さらに全体を try / catch で囲んでいる。
+const audit = require('../services/auditLog');
+
+// [メソッド, パスの形, 記録する種類]。Express は既定で大文字・小文字と末尾の / を区別しないので、ここでも区別しない。
+// ID の部分は数字に限らない（/api/users/1.0 のような書き方でもルートに届くので、その場合も同じ種類として記録する）。
+const RULES = [
+  ['GET',    /^\/api\/patients\/?$/i,                      'patients.list'],
+  ['POST',   /^\/api\/patients\/?$/i,                      'patients.create'],
+  ['PUT',    /^\/api\/patients\/([^/]+)\/?$/i,             'patients.update'],
+  ['DELETE', /^\/api\/patients\/([^/]+)\/?$/i,             'patients.delete'],
+  ['GET',    /^\/api\/records\/?$/i,                       'records.view'],
+  ['POST',   /^\/api\/records\/?$/i,                       'records.save'],
+  ['GET',    /^\/api\/records\/summary\/?$/i,              'summary.view'],
+  ['GET',    /^\/api\/meal-prices\/?$/i,                   'mealprices.view'],
+  ['GET',    /^\/api\/meal-prices\/bulk\/?$/i,             'mealprices.list'],
+  ['POST',   /^\/api\/meal-prices\/?$/i,                   'mealprices.save'],
+  ['GET',    /^\/api\/pdf\/?$/i,                           'pdf.export'],
+  ['POST',   /^\/api\/items\/?$/i,                         'items.create'],
+  ['POST',   /^\/api\/items\/prices\/?$/i,                 'prices.save'],
+  ['PUT',    /^\/api\/items\/([^/]+)\/?$/i,                'items.update'],
+  ['DELETE', /^\/api\/items\/([^/]+)\/?$/i,                'items.delete'],
+  ['POST',   /^\/api\/wards\/?$/i,                         'wards.create'],
+  ['PUT',    /^\/api\/wards\/([^/]+)\/?$/i,                'wards.update'],
+  ['GET',    /^\/api\/users\/?$/i,                         'users.list'],
+  ['POST',   /^\/api\/users\/?$/i,                         'users.create'],
+  ['POST',   /^\/api\/users\/([^/]+)\/unlock\/?$/i,        'users.unlock'],
+  ['PUT',    /^\/api\/users\/([^/]+)\/?$/i,                'users.update'],
+  ['DELETE', /^\/api\/users\/([^/]+)\/?$/i,                'users.delete'],
+  ['POST',   /^\/api\/export\/weekly-usage\/run\/?$/i,     'export.run'],
+  ['GET',    /^\/api\/audit\/?$/i,                         'audit.view'],
+];
+
+/**
+ * 送られてきたIDを数値にする。ルート側が受け付ける書き方（"1.0"、" 1"、"0001" など。Number() や SQLite の比較は
+ * これらを 1 と同じに扱う）も同じ数値にそろえ、「どの患者か」が記録から抜けないようにする。
+ * @returns {{ id?: number, raw?: any }} id = 数値として読めたときのID / raw = 普通の数字の書き方でなかったときの、送られてきたままの値
+ */
+function parseId(value) {
+  if (value === undefined || value === null || value === '') return {};
+  let id;
+  if (typeof value === 'number') id = value;
+  else if (typeof value === 'string' && value.trim() !== '') {
+    // DB（sql.js）は文字列を NUL 文字のところで打ち切って読むので、"8\u0000x" は 8 として扱われる。記録も同じ読み方にそろえる
+    const nul = value.indexOf('\0');
+    id = Number(nul >= 0 ? value.slice(0, nul) : value);
+  }
+  if (!Number.isSafeInteger(id) || id <= 0) return { raw: value };   // 数値として読めない（文字・配列・オブジェクトなど）
+  return typeof value === 'number' || /^[1-9]\d{0,14}$/.test(value) ? { id } : { id, raw: value };
+}
+
+function decodeSegment(text) {
+  try { return decodeURIComponent(text); } catch (_) { return text; }
+}
+
+// 記録しない GET は、ここに挙げた参照用データだけ（患者の情報を含まないもの）。
+// 「表に無い GET は記録しない」という決め方にすると、表の書き方から外れたURLがルートに届いたとき、記録なしで
+// 患者の情報を返してしまう（実際に /api/pdf//?patient_id=8 のように / を重ねると、記録が1行も残らずに届いた。動作検証.md の S-04）。
+// そこで「記録しないものを挙げ、それ以外はすべて記録する」決め方にしている。
+const UNLOGGED_GET = /^\/api\/(wards|items|items\/prices|users\/password-policy)\/?$/i;
+
+// そのリクエストが記録の対象なら { action, target, targetRaw }、対象外なら null
+function classify(method, rawPath) {
+  if (typeof rawPath !== 'string') return null;
+  // Express は「/api/records//」のように / を重ねた書き方でも同じルートへ届けることがあるので、1つにそろえてから調べる
+  const path = rawPath.replace(/\/{2,}/g, '/');
+  if (!/^\/api\//i.test(path) || /^\/api\/auth(\/|$)/i.test(path)) return null;
+  const m = method === 'HEAD' ? 'GET' : method;
+  for (const [ruleMethod, pattern, action] of RULES) {
+    if (ruleMethod !== m) continue;
+    const match = pattern.exec(path);
+    if (!match) continue;
+    if (match[1] === undefined) return { action };
+    const { id, raw } = parseId(decodeSegment(match[1]));
+    return { action, target: id, targetRaw: raw };
+  }
+  if (m === 'OPTIONS' || (m === 'GET' && UNLOGGED_GET.test(path))) return null;
+  return { action: 'other' };   // 表に無いものは、GET も含めて「その他」として残す
+}
+
+// 細工した書き方のURLは、処理に進めない（auditMiddleware のあとに置くので、断ったことは記録に残る）。
+//   ・「//」を含むパス … Express が余分な / を読み飛ばして、同じルートへ届けてしまう
+//   ・%00（NUL 文字）  … DB が文字列を NUL のところで打ち切って読むため、「8%00x」が患者ID 8 として通ってしまう
+// どちらも、画面（public/js/app.js）が送ることはない。
+function rejectOddUrls(req, res, next) {
+  const path = typeof req.path === 'string' ? req.path : '';
+  if (!/^\/+api(\/|$)/i.test(path)) return next();
+  if (path.includes('//')) return res.status(404).json({ error: '見つかりません' });
+  const url = String(req.originalUrl || '');
+  if (/%00/i.test(url) || url.includes('\0')) return res.status(400).json({ error: 'リクエストの形式が正しくありません' });
+  next();
+}
+
+let lastErrorReportedAt = 0;
+
+function auditMiddleware(req, res, next) {
+  let kind = null;
+  try { kind = classify(req.method, req.path); } catch (_) { kind = null; }
+  if (!kind) return next();
+
+  const startedAt = process.hrtime.bigint();
+  // ログアウトやユーザーの無効化で、応答を返す時点ではセッションからユーザーが消えていることがあるので、先に控えておく
+  const actorAtStart = req.session?.user ? { ...req.session.user } : null;
+  // 接続元も先に控える（途中で接続が切れた要求では、あとからは分からなくなる）
+  let ipAtStart = '';
+  try { ipAtStart = audit.clientIp(req); } catch (_) { /* 取れなければ空のまま */ }
+
+  // ログイン済みのユーザーの要求は、1件ずつ記録できる数（1分間に audit.USER_PER_MINUTE 件）までしか処理しない。
+  // 超えた分は、ここで断る（ルートには進ませない）。記録に残せない要求まで処理すると、要求を連打したあとで開いた
+  // 患者が記録に残らなくなるため。人が画面を操作して届く数ではない（全病棟の月次集計でも、1回の表示で「患者数＋1」件）。
+  if (actorAtStart) {
+    let accepted = true;
+    try { accepted = audit.reserveUser(actorAtStart, kind.action); } catch (_) { /* 数えられなかったときは通す（下で1件ずつ記録される） */ }
+    if (!accepted) {
+      res.set('Retry-After', '60');
+      return res.status(429).json({ error: '操作が多すぎます。1分ほど待ってから、もう一度お試しください。' });
+    }
+  }
+
+  // 'close' は、応答を返し終えたときにも、途中で接続が切れたとき（PDFの作成中にタブを閉じた等）にも1回だけ起きる
+  res.once('close', () => {
+    try {
+      const actor = req.session?.user || actorAtStart;
+      const query = req.query && typeof req.query === 'object' ? req.query : {};
+      const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
+      const isPatientRoute = kind.action.startsWith('patients.') && (kind.target !== undefined || kind.targetRaw !== undefined);
+      // 患者IDは、ルートが実際に使う場所から取る（表示は検索条件、登録・変更は本文）。
+      // 検索条件と本文の両方に別々のIDを書いて、記録だけを別の患者に見せかける、ということをさせないため
+      const isRead = req.method === 'GET' || req.method === 'HEAD';
+      const patientSource = isRead ? query.patient_id : (body && body.patient_id !== undefined ? body.patient_id : query.patient_id);
+      const patient = isPatientRoute ? { id: kind.target, raw: kind.targetRaw } : parseId(patientSource);
+
+      // 未ログインの要求は、内容（本文・検索条件）を記録しない。だれでも送れるので、大きな本文を送り付けてログを膨らませられるため
+      let detail;
+      if (actor) {
+        if (isRead) {
+          const { patient_id, ...rest } = query;   // patient_id は別の欄に出すので、detail からは外す
+          detail = rest;
+        } else if (body) {
+          const { patient_id, ...rest } = body;
+          detail = Object.keys(query).length ? { ...rest, _query: query } : rest;   // 検索条件に書かれた値（patient_id を含む）はそのまま残す
+        } else if (Object.keys(query).length) {
+          detail = { _query: query };
+        }
+        // ルート側で付け足した内容（削除した患者の氏名など）
+        if (res.locals && res.locals.auditDetail) detail = { ...(detail || {}), ...res.locals.auditDetail };
+      }
+
+      audit.record(req, kind.action, {
+        actor: actorAtStart,
+        ip: ipAtStart,
+        // 応答を返す前に接続が切れた要求には、状態コードが無い（200 と記録すると、成功したように見えてしまう）
+        status: res.headersSent ? res.statusCode : undefined,
+        ms: Number((process.hrtime.bigint() - startedAt) / 1000000n),
+        patient_id: patient.id,
+        patient_id_raw: patient.raw,
+        target: isPatientRoute ? undefined : kind.target,
+        target_raw: isPatientRoute ? undefined : kind.targetRaw,
+        detail,
+        aborted: !res.writableFinished,
+      });
+    } catch (err) {
+      // ここで例外を外へ出すとサーバーが止まる。記録できなかったことだけをエラーログに残す（1分に1回まで）
+      if (Date.now() - lastErrorReportedAt > 60000) {
+        lastErrorReportedAt = Date.now();
+        console.error('操作ログの記録中にエラー:', err && err.message);
+      }
+    }
+  });
+  next();
+}
+
+module.exports = { auditMiddleware, rejectOddUrls, classify, parseId };

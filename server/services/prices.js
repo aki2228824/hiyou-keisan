@@ -26,6 +26,14 @@ function toPositiveInt(value) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+/**
+ * 検索条件の値が、文字列か数値（または未指定）か。
+ * ?year[a]=1 のような指定で届くオブジェクトや配列は false（そのまま Number() やDBへ渡すと例外になるため、先に弾く）
+ */
+function isPlainValue(value) {
+  return value == null || typeof value === 'string' || typeof value === 'number';
+}
+
 /** 年月の入力チェック。正しければ { year, month }、問題があれば { error } を返す */
 function parseYearMonth(year, month) {
   const y = toPositiveInt(year);
@@ -85,4 +93,4 @@ function getMealPriceMap(year, month) {
   return map;
 }
 
-module.exports = { getItemPriceMap, getMealPrices, getMealPriceMap, toPrice, toPositiveInt, parseYearMonth };
+module.exports = { getItemPriceMap, getMealPrices, getMealPriceMap, toPrice, toPositiveInt, parseYearMonth, isPlainValue };

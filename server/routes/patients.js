@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { requireRole } = require('../middleware/auth');
-const { toPositiveInt } = require('../services/prices');
+const { toPositiveInt, isPlainValue } = require('../services/prices');
 
 // 実在する病棟のIDなら数値で返す。存在しなければ null
 function findWardId(ward_id) {
@@ -12,6 +12,8 @@ function findWardId(ward_id) {
 
 router.get('/', (req, res) => {
   const { ward_id } = req.query;
+  if (!isPlainValue(ward_id))
+    return res.status(400).json({ error: '検索条件の指定が正しくありません' });
   let sql = `SELECT p.*, w.name as ward_name FROM patients p JOIN wards w ON p.ward_id=w.id`;
   const params = [];
   if (ward_id) { sql += ' WHERE p.ward_id=?'; params.push(ward_id); }
@@ -43,8 +45,8 @@ router.put('/:id', requireRole('admin'), (req, res) => {
 
 router.delete('/:id', requireRole('admin'), (req, res) => {
   const id = req.params.id;
-  if (!db.query('SELECT id FROM patients WHERE id=?', [id])[0])
-    return res.status(404).json({ error: '患者が見つかりません' });
+  const target = db.query('SELECT id, name FROM patients WHERE id=?', [id])[0];
+  if (!target) return res.status(404).json({ error: '患者が見つかりません' });
   // 関連データごと「全部消す／何も消さない」のどちらかにする（途中で止まって一部だけ消えた状態を残さない）
   db.transaction(() => {
     db.run('DELETE FROM records WHERE patient_id=?', [id]);
@@ -52,6 +54,8 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
     db.run('DELETE FROM patient_meal_prices WHERE patient_id=?', [id]);
     db.run('DELETE FROM patients WHERE id=?', [id]);
   });
+  // 操作ログに、削除した患者の氏名を残す（削除後は患者IDから氏名を引けなくなるため）
+  res.locals.auditDetail = { name: target.name };
   res.json({ ok: true });
 });
 

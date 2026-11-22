@@ -2,7 +2,8 @@
 # Nightly backup of the hiyou-keisan database. Run as root on the NAS / Linux host.
 #   1. copy data/hiyou.db to a dated file
 #   2. verify the copy with the SQLite engine inside the app image (no network, read-only mount)
-#   3. delete verified copies older than KEEP_DAYS days
+#   3. copy export.log and the operation log (data/audit)
+#   4. delete verified copies older than KEEP_DAYS days
 # Exit code 0 = a verified copy was written. Anything else = no valid backup today.
 APP_DIR="${APP_DIR:-/volume1/docker/hiyou-keisan}"
 DEST="${DEST:-/volume1/backup/hiyou-keisan}"
@@ -22,6 +23,8 @@ while [ "$try" -le 3 ]; do
   if cp "$APP_DIR/data/hiyou.db" "$DEST/$OUT" \
      && docker run --rm --network none -v "$DEST:/backup:ro" --entrypoint node "$IMAGE" -e "$CHECK" "/backup/$OUT"; then
     if [ -f "$APP_DIR/data/export.log" ]; then cp "$APP_DIR/data/export.log" "$DEST/export.log"; fi
+    # operation log (audit-YYYY-MM.jsonl, append-only): copy the month files; nothing is deleted here
+    if [ -d "$APP_DIR/data/audit" ]; then mkdir -p "$DEST/audit" && cp -p "$APP_DIR/data/audit/"audit-*.jsonl "$DEST/audit/" 2>/dev/null || echo "backup: WARNING: could not copy the operation log" >&2; fi
     find "$DEST" -name 'hiyou-*.db' -mtime +"$KEEP_DAYS" -exec rm -f {} \;
     echo "backup OK: $DEST/$OUT"
     exit 0

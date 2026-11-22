@@ -43,6 +43,9 @@ router.get('/', async (req, res) => {
     const { patient_id, year, month } = req.query;
 
     // 入力チェック（不正な指定のまま Chrome を起動しない）
+    // 文字列以外（?patient_id[a]=1 のような指定で届くオブジェクトや配列）は、文字列に直さずに不正として扱う
+    if ([patient_id, year, month].some(v => v != null && typeof v !== 'string' && typeof v !== 'number'))
+      return res.status(400).json({ error: '検索条件の指定が正しくありません' });
     if (!/^\d+$/.test(String(patient_id ?? '')) || Number(patient_id) <= 0)
       return res.status(400).json({ error: 'patient_id が正しくありません' });
     if (!/^\d{4}$/.test(String(year ?? '')))
@@ -126,7 +129,9 @@ router.get('/', async (req, res) => {
     });
 
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="seikyu_${patient_id}_${year}${month}.pdf"` });
-    res.send(pdf);
+    // Puppeteer 23 以降、page.pdf() は Buffer ではなく Uint8Array を返す。
+    // Express の res.send() は Buffer 以外のオブジェクトを JSON として送ってしまうので、Buffer に直してから送る。
+    res.send(Buffer.from(pdf));
   } catch (err) {
     console.error('PDF生成に失敗しました:', err);
     if (!res.headersSent) res.status(500).json({ error: 'PDFの生成に失敗しました' });

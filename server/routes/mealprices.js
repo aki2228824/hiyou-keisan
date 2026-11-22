@@ -1,12 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { getMealPrices, getMealPriceMap, toPrice, toPositiveInt, parseYearMonth } = require('../services/prices');
+const { getMealPrices, getMealPriceMap, toPrice, toPositiveInt, parseYearMonth, isPlainValue } = require('../services/prices');
 const { requireRole } = require('../middleware/auth');
 
 // 患者の食事単価取得（指定年月、なければ直近の設定を返す）
 router.get('/', (req, res) => {
   const { patient_id, year, month } = req.query;
+  if (![patient_id, year, month].every(isPlainValue))
+    return res.status(400).json({ error: '検索条件の指定が正しくありません' });
+  // 指定が欠けていると、DB への問い合わせが例外になり 500 を返してしまうので、先に断る
+  if ([patient_id, year, month].some(v => v === undefined || v === ''))
+    return res.status(400).json({ error: 'patient_id・year・month を指定してください' });
 
   res.json(getMealPrices(patient_id, year, month));
 });
@@ -14,6 +19,10 @@ router.get('/', (req, res) => {
 // 複数患者の食事単価を一括取得（月次集計用）
 router.get('/bulk', (req, res) => {
   const { year, month } = req.query;
+  if (![year, month].every(isPlainValue))
+    return res.status(400).json({ error: '検索条件の指定が正しくありません' });
+  if ([year, month].some(v => v === undefined || v === ''))
+    return res.status(400).json({ error: 'year・month を指定してください' });
   res.json(getMealPriceMap(year, month));
 });
 
