@@ -117,6 +117,7 @@ git status --short     # Dockerfile、docker-compose.yml、.dockerignore、.gita
    [System.IO.File]::AppendAllText("$dst\.env", "SESSION_SECRET=" + (node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") + "`n")
    ```
    `.env` は UTF-8（BOM なし）であること。メモ帳で編集するのは可、PowerShell 5.1 の `>` や `Out-File` で作り直すと UTF-16 になり読めません。
+   **コピーしたあと、NAS 側の `.env` をメモ帳で開き、`EXPORT_ENABLED=false` に変えておく**（開発PCの値 true のままだと、準備中の NAS が月曜 6:00 に、実績が無くても週次レポートを送信し、開発PCからの送信と二重にもなる）。実績の入力を始める日に `true` へ変えて、コンテナを作り直す（2編 1-2 の 8）。
 8. 今のデータを引き継ぐ場合: PC のアプリを止めてから（起動中の画面で Ctrl+C）コピーし、以後 PC 側では起動しない（2 か所で別々に更新されるのを防ぐ）:
    ```powershell
    Copy-Item "$src\data\hiyou.db" "$dst\data\hiyou.db"
@@ -152,7 +153,7 @@ sudo docker ps --filter name=hiyou-keisan --format '{{.Names}}  {{.Status}}  {{.
 sudo docker logs hiyou-keisan
 # 期待: 「DBファイル: /app/data/hiyou.db（○○ バイト）」（データを移行したのに「見つからないため新しく作成します」と出たら hiyou.db が読まれていない）
 #       「操作ログ: /app/data/audit」
-#       「週次使用量レポート: cron登録 (0 6 * * 1 / Asia/Tokyo)」（無効なら「…無効」）
+#       「週次使用量レポート: EXPORT_ENABLED が true でないため無効」（実績の入力を始める日に true にすると「cron登録 (0 6 * * 1 / Asia/Tokyo)」）
 #       「療養介護サービス提供実績記録票 起動: http://localhost:3000」
 sudo docker top hiyou-keisan
 # 期待: 「node server/index.js」の行の UID が 1000（root ではない）。QNAP や Linux 機（7-2）では、ホスト側に uid 1000 のユーザーがいるとその名前で表示される（root でなければよい）
@@ -288,5 +289,5 @@ $env:DB_PATH='C:\temp\restore-test\hiyou.db'; $env:EXPORT_ENABLED='false'; $env:
 | エントリポイント | 構文と非 root 側の分岐のみ確認。root → chown → 降格は未確認 |
 | バックアップスクリプト | docker コマンドを代用品に置き換えて正常・破損・欠損・世代削除を確認。実機では未確認 |
 | Synology / QNAP の画面操作、Buffalo / I-O DATA の機種別仕様 | 公式ページと検索結果からの記述。実機では未確認 |
-| 同じ DB を 2 つのプロセスで開かせない仕組み（2026-11-23 追加。server/services/singleInstance.js） | Windows（名前付きパイプ）では確認済み。Linux（コンテナ）では `/tmp` のソケットを使う作りで、**未確認**。仕組みが使えない環境では、注意を表示して確認なしで起動する（起動できなくなることは無い）。コンテナは 1 つしか起動しない構成なので、通常は影響しない |
+| 同じ DB を 2 つのプロセスで開かせない仕組み（2026-11-23 追加。server/services/singleInstance.js） | Windows（名前付きパイプ）では確認済み。Linux（コンテナ）では `/tmp` のソケットを使う作りで、**未確認**。仕組みが使えない環境では、注意を表示して確認なしで起動する（起動できなくなることは無い）。コードを読んだ範囲で分かっている弱点: (1) 前回の異常終了でソケットのファイルが残っている状態で 2 つを同時に起動すると、両方が起動できてしまうことがある、(2) `/tmp` はコンテナごとに別なので、同じ data フォルダを 2 つのコンテナで使うと防げない。**コンテナは 1 つだけ起動する**（同じ data フォルダを指すコンテナを 2 つ作らない） |
 | リバースプロキシを使うときに `ports` を `"127.0.0.1:3000:3000"` にする設定（2編 3-3 の 4） | **未確認**（Docker が無い）。アプリ側の動作（直接つなぐと接続元を偽れること）は確認済み |
