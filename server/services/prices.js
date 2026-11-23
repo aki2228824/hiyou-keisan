@@ -11,12 +11,31 @@ function num(value) {
   return Number(value) || 0;
 }
 
-/** 単価・金額の入力値を数値にそろえる。未入力は 0、0以上の数値として読めないものは null */
-function toPrice(value) {
+const MAX_COUNT = 9999;      // 1日・1品目あたりの数量、1日の食事回数・加算の上限
+const MAX_PRICE = 9999999;   // 単価・上限額（円）の上限
+
+/**
+ * 数量・回数・金額の入力値を「0 以上 max 以下の整数」にそろえる。未入力は 0、それ以外で読めないものは null。
+ * 小数（1.5）、指数や16進の書き方（"1e2"・"0x10"）、上限を超える値は受け付けない
+ * （以前は受け付けていたので、単価 0.1 × 数量 3 = 0.30000000000000004 円のように、金額に端数が出た）。
+ */
+function toWholeNumber(value, max) {
   if (value == null || value === '') return 0;
-  if (typeof value !== 'number' && typeof value !== 'string') return null;
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : null;
+  let n;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'string' && /^\d{1,9}$/.test(value.trim())) n = Number(value.trim());
+  else return null;
+  return Number.isInteger(n) && n >= 0 && n <= max ? n : null;
+}
+
+/** 単価・金額の入力値を整数（円）にそろえる。未入力は 0、0〜9,999,999 の整数として読めないものは null */
+function toPrice(value) {
+  return toWholeNumber(value, MAX_PRICE);
+}
+
+/** 数量・回数の入力値を整数にそろえる。未入力は 0、0〜9,999 の整数として読めないものは null */
+function toCount(value) {
+  return toWholeNumber(value, MAX_COUNT);
 }
 
 /** ID・年・月の入力値を正の整数にそろえる。読めないものは null */
@@ -93,4 +112,4 @@ function getMealPriceMap(year, month) {
   return map;
 }
 
-module.exports = { getItemPriceMap, getMealPrices, getMealPriceMap, toPrice, toPositiveInt, parseYearMonth, isPlainValue };
+module.exports = { getItemPriceMap, getMealPrices, getMealPriceMap, toPrice, toCount, toPositiveInt, parseYearMonth, isPlainValue, MAX_COUNT, MAX_PRICE };

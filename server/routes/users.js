@@ -96,6 +96,10 @@ router.put('/:id', requireRole('admin'), (req, res) => {
     if (hash) db.run('UPDATE users SET password_hash=? WHERE id=?', [hash, target.id]);
   });
 
+  // ユーザーIDを変えたら、古いIDに付いていたログイン失敗の回数とロックは消す
+  // （ロックはIDの文字列で数えている。消さないと、あとで同じIDを別の人に付けたときに、最初からロック中になる）
+  if (name !== target.username) lockout.unlock(target.username);
+
   if (hash) {
     // パスワードを決め直したら、ログイン失敗によるロックも解除する
     lockout.unlock(target.username);

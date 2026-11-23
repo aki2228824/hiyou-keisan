@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { getItemPriceMap, getMealPrices } = require('../services/prices');
+const { getItemPriceMap, getMealPrices, toCount } = require('../services/prices');
 const { requireRole } = require('../middleware/auth');
 
 // 一覧・集計の検索条件チェック。問題があればエラーメッセージを返す
@@ -24,13 +24,7 @@ function isRealDate(str) {
   return !isNaN(d) && d.toISOString().slice(0, 10) === str;
 }
 
-// 数量・回数を数値にそろえる。未入力は 0、数値として読めないものは null
-function toCount(value) {
-  if (value == null || value === '') return 0;
-  if (typeof value !== 'number' && typeof value !== 'string') return null;
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
+// 数量・回数は、0〜9,999 の整数だけを受け付ける（services/prices.js の toCount。未入力は 0、読めないものは null）
 
 router.get('/', (req, res) => {
   const { patient_id, year, month } = req.query;
@@ -78,7 +72,7 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   // 数量は数値にそろえてから保存する（数値以外は 400）
   const rows = items.map(it => ({ item_id: Number(it.item_id), quantity: toCount(it.quantity) }));
   if (rows.some(r => r.quantity === null))
-    return res.status(400).json({ error: '数量は0以上の数値で指定してください' });
+    return res.status(400).json({ error: `${record_date} の数量は、0〜9999 の整数で入力してください（小数は使えません）` });
 
   let mealRow = null;
   if (meal) {
@@ -91,7 +85,7 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
       toCount(meal.hospital_addition), toCount(meal.hospital_special),
     ];
     if (mealRow.some(v => v === null))
-      return res.status(400).json({ error: '食事回数・加算は0以上の数値で指定してください' });
+      return res.status(400).json({ error: `${record_date} の食事回数・加算は、0〜9999 の整数で入力してください（小数は使えません）` });
   }
 
   // 存在しない患者・物品への登録を防ぐ（sql.js では外部キー制約が効かないため）

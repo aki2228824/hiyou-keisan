@@ -39,7 +39,7 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   // 単価・上限は数値にそろえてから保存する（未入力は 0、数値以外は 400）
   const prices = [breakfast_price, lunch_price, dinner_price, meal_cap].map(toPrice);
   if (prices.some(v => v === null))
-    return res.status(400).json({ error: '食事単価・上限は0以上の数値で指定してください' });
+    return res.status(400).json({ error: '食事単価・上限は、0〜9,999,999 の整数（円）で入力してください（小数は使えません）' });
 
   // 存在しない患者への登録を防ぐ（sql.js では外部キー制約が効かないため）
   if (!db.query('SELECT id FROM patients WHERE id=?', [pid])[0])

@@ -418,6 +418,7 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
 
 /* 月次集計 */
 .summary-wrap { overflow-x: auto; }
+.summary-caption { font-size: 14px; font-weight: bold; color: #D97730; margin: 4px 0 8px; }
 table.summary-table {
   width: 100%;
   border-collapse: collapse;

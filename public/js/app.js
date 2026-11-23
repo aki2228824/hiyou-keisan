@@ -186,13 +186,24 @@ let lastAlert = { message: '', closedAt: 0 };
 let selectedWardId    = null;
 let selectedPatientId = null;
 let loadedMonth       = null;  // いま表示している入力表の対象月（月の切替を取りやめたときに戻す値）
+let loadedForm        = null;  // いま画面に出ている入力表が、どの患者・どの月のものか { patientId, year, month }。表が無いときは null
+let inputFormSeq      = 0;     // 入力表の読み込みの通し番号（いちばん新しい読み込みの結果だけを画面に出す）
+let inputPatients     = [];    // 選択中の病棟の患者（入力表の見出しに氏名を出すため）
 let savingRecords     = false; // 一括保存の実行中か（二重クリック防止）
 
 const DOW = ['日','月','火','水','木','金','土'];
 
-// 入力表に、まだ保存していない変更があるか（変更した欄には data-dirty の印が付く）
+// 入力表に、まだ保存していない変更があるか（変更した欄には data-dirty の印が付く。表の上の食事単価・上限の欄も同じ）
 function hasUnsavedInput() {
-  return !!document.querySelector('#monthly-tbl .cell-input[data-dirty]');
+  return !!document.querySelector('#monthly-tbl .cell-input[data-dirty], #input-form .meal-price-bar input[data-dirty]');
+}
+
+// 入力表を消す。読み込みの途中だった応答があとから届いても、表を書かせない
+function clearInputForm() {
+  loadedForm = null;
+  loadedMonth = null;
+  inputFormSeq++;
+  document.getElementById('input-form').innerHTML = '';
 }
 
 // 未保存の変更があるときは、表を切り替える前に確認する。切り替えてよければ true
@@ -227,8 +238,7 @@ async function selectWard(wardId) {
   if (!confirmDiscardUnsaved()) return;
   selectedWardId = wardId;
   selectedPatientId = null;
-  loadedMonth = null;
-  document.getElementById('input-form').innerHTML = '';
+  clearInputForm();
   document.querySelectorAll('.ward-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.ward-btn[onclick="selectWard(${wardId})"]`).classList.add('active');
   await loadPatients();
@@ -238,6 +248,7 @@ async function loadPatients() {
   if (!selectedWardId) return;
   const patients = await api('/patients?ward_id=' + selectedWardId);
   const active = patients.filter(p => p.active);
+  inputPatients = active;
 
   document.getElementById('patient-list').innerHTML = active.length
     ? active.map(p => `
@@ -250,10 +261,22 @@ async function loadPatients() {
 async function selectPatient(patientId) {
   if (!confirmDiscardUnsaved()) return;
   selectedPatientId = patientId;
-  loadedMonth = null; // 上で確認済みなので、loadInputForm では重ねて確認しない
+  // 先に前の表を消す（上で確認済みなので、loadInputForm では重ねて確認しない）。
+  // 消さないと、読み込みに失敗したとき（ログイン切れ・通信エラー・要求が多すぎる、など）に、前の患者の表が残ったまま
+  // 別の患者が選択中になり、その表への入力が別の患者に保存されてしまう
+  clearInputForm();
   document.querySelectorAll('.patient-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.patient-btn[onclick="selectPatient(${patientId})"]`).classList.add('active');
-  await loadInputForm();
+  try {
+    await loadInputForm();
+  } catch (err) {
+    // 読み込めなかったら、患者を選んでいない状態に戻す（表が無いのに、選択中の表示だけが残らないように）
+    if (selectedPatientId === patientId && !loadedForm) {
+      selectedPatientId = null;
+      document.querySelectorAll('.patient-btn').forEach(b => b.classList.remove('active'));
+    }
+    throw err;
+  }
 }
 
 async function loadInputForm() {
@@ -267,13 +290,24 @@ async function loadInputForm() {
   const ym = monthEl.value;
   if (!patientId || !ym) return;
 
+  // 前の表（前の月・前の患者のもの）は先に消し、読み込みが済んだものだけを表示する
+  clearInputForm();
+  const seq = inputFormSeq;
   const [year, month] = ym.split('-');
-  const [itemsWithPrices, existing] = await Promise.all([
+  const [itemsWithPrices, existing, mealPrices] = await Promise.all([
     api(`/items/prices?year=${year}&month=${month}`),
-    api(`/records?patient_id=${patientId}&year=${year}&month=${month}`)
+    api(`/records?patient_id=${patientId}&year=${year}&month=${month}`),
+    api(`/meal-prices?patient_id=${patientId}&year=${year}&month=${month}`),
   ]);
+  // 読み込みの間に、別の患者・別の月が選ばれた（または表が消された）。遅れて届いた応答で表を書き換えない
+  // （書き換えると、選択中の患者と違う患者の表が出て、入力が別の患者に保存される）
+  if (seq !== inputFormSeq) return;
 
-  const activeItems = itemsWithPrices.filter(i => i.active);
+  // 表に出す物品: 有効なものと、無効でもこの患者・この月に実績があるもの。
+  // 月次集計は無効にした物品の実績も金額に含めるので、ここで出さないと、同じ月の金額が画面によって食い違う
+  const usedItemIds = new Set(existing.records.filter(r => Number(r.quantity) > 0).map(r => r.item_id));
+  const activeItems = itemsWithPrices.filter(i => i.active || usedItemIds.has(i.id));
+  const patientName = (inputPatients.find(p => p.id == patientId) || {}).name || '';
 
   // 既存データをマップ化
   const recMap = {};   // recMap[date][item_id] = quantity
@@ -295,7 +329,7 @@ async function loadInputForm() {
 
   // ヘッダー
   const itemHeaders = activeItems.map(item =>
-    `<th class="col-item g-item">${esc(item.name)}<br><span class="item-price-sub">${esc(item.unit_price.toLocaleString())}円</span></th>`
+    `<th class="col-item g-item">${esc(item.name)}${item.active ? '' : '（無効）'}<br><span class="item-price-sub">${esc(item.unit_price.toLocaleString())}円</span></th>`
   ).join('');
 
   // 行
@@ -326,9 +360,6 @@ async function loadInputForm() {
     </tr>`;
   }).join('');
 
-  // 食事単価を取得
-  const mealPrices = await api(`/meal-prices?patient_id=${patientId}&year=${year}&month=${month}`);
-
   // 小計行（初期値）
   const initMealTotals = { hospital_addition: 0, hospital_special: 0, breakfast: 0, lunch: 0, dinner: 0 };
   for (const m of Object.values(mealMap)) {
@@ -354,7 +385,7 @@ async function loadInputForm() {
   document.getElementById('input-form').innerHTML = `
     <div class="monthly-card">
       <div class="monthly-header">
-        <span class="monthly-title">${esc(year)}年${Number(month)}月　実績入力</span>
+        <span class="monthly-title">${esc(patientName)}　${esc(year)}年${Number(month)}月　実績入力</span>
         <button onclick="saveAllRecords()" class="btn-primary">一括保存</button>
       </div>
       <div class="meal-price-bar">
@@ -400,6 +431,8 @@ async function loadInputForm() {
     </div>`;
 
   loadedMonth = ym;
+  // この表が、どの患者・どの月のものかを控える。保存はこの値を使う（選択中の患者を表す変数とは別に持つ）
+  loadedForm = { patientId, year: Number(year), month: Number(month) };
 
   // 入力のたびに、変更した欄へ「未保存」の印を付けて小計を再計算する（保存時は印の付いた欄だけを送る）
   document.getElementById('monthly-tbl').addEventListener('input', e => {
@@ -416,9 +449,10 @@ async function loadInputForm() {
     if (idx >= 0 && idx < inputs.length - 1) inputs[idx + 1].focus();
   });
 
-  // 食事単価・上限変更時に食事費合計を即時更新
-  ['mp-breakfast', 'mp-lunch', 'mp-dinner', 'mp-cap'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', updateMealCostTotal);
+  // 食事単価・上限変更時に食事費合計を即時更新。変更した欄には「未保存」の印を付ける
+  // （「一括保存」で一緒に保存し、保存せずに切り替えようとしたら確認を出すため）
+  MEAL_PRICE_INPUTS.forEach(id => {
+    document.getElementById(id)?.addEventListener('input', e => { e.target.dataset.dirty = '1'; updateMealCostTotal(); });
   });
 
   // 初期表示で上限ラベルを更新
@@ -469,36 +503,51 @@ function updateMealCostTotal() {
   if (capLabel) capLabel.textContent = (cap > 0 && rawCost > cap) ? '（上限適用）' : '';
 }
 
-async function saveMealPrices(patientId, year, month) {
+const MEAL_PRICE_INPUTS = ['mp-breakfast', 'mp-lunch', 'mp-dinner', 'mp-cap'];
+
+async function saveMealPrices(patientId, year, month, opts = {}) {
+  const fields = MEAL_PRICE_INPUTS.map(id => document.getElementById(id));
+  const sent = fields.map(el => el.value);
   await api('/meal-prices', { method: 'POST', body: {
     patient_id: Number(patientId),
     year: Number(year),
     month: Number(month),
-    breakfast_price: Number(document.getElementById('mp-breakfast').value) || 0,
-    lunch_price:     Number(document.getElementById('mp-lunch').value)     || 0,
-    dinner_price:    Number(document.getElementById('mp-dinner').value)    || 0,
-    meal_cap:        Number(document.getElementById('mp-cap').value)       || 0,
+    breakfast_price: Number(sent[0]) || 0,
+    lunch_price:     Number(sent[1]) || 0,
+    dinner_price:    Number(sent[2]) || 0,
+    meal_cap:        Number(sent[3]) || 0,
   }});
+  // 保存できた欄から「未保存」の印を外す（送信中に打ち直された欄は、まだ保存されていないので残す）
+  fields.forEach((el, i) => { if (el.value === sent[i]) delete el.dataset.dirty; });
   updateMealCostTotal();
-  showToast('食事単価を保存しました');
+  if (!opts.quiet) showToast('食事単価を保存しました');
 }
 
 async function saveAllRecords() {
-  const patientId = selectedPatientId;
-  if (!patientId || savingRecords) return;
+  // 保存先は「いま画面に出ている表」の患者。選択中の患者を表す変数ではなく、表を描いたときに控えた値を使う
+  // （選択中の表示と表の中身が食い違っても、表に入力した内容が別の患者に保存されないようにする）
+  const form = loadedForm;
+  if (!form || savingRecords) return;
+  const patientId = form.patientId;
 
   // 変更した欄だけを送る。
   // 表の全部の欄を送り直すと、この画面を開いた後にほかの人が保存した内容を、
   // 自分が触っていない欄の古い値で上書きして消してしまうため。
   const dirty = [...document.querySelectorAll('#monthly-tbl .cell-input[data-dirty]')];
-  if (!dirty.length) { showToast('変更はありません'); return; }
+  const dirtyPrices = document.querySelector('#input-form .meal-price-bar input[data-dirty]');
+  if (!dirty.length && !dirtyPrices) { showToast('変更はありません'); return; }
   const dates = [...new Set(dirty.map(el => el.dataset.date))].sort();
 
   const button = document.querySelector('#input-form button[onclick="saveAllRecords()"]');
   savingRecords = true;
   if (button) { button.disabled = true; button.textContent = '保存中…'; }
+  let savedDays = 0, stoppedAt = null;
   try {
+    // 食事単価・上限を変えていたら、一緒に保存する
+    // （単価を入れて「一括保存」だけを押すと、画面には金額が出るのに、単価は保存されないままになっていた）
+    if (dirtyPrices) await saveMealPrices(form.patientId, form.year, form.month, { quiet: true });
     for (const date of dates) {
+      stoppedAt = date;
       const changed = dirty.filter(el => el.dataset.date === date).map(el => ({ el, sent: el.value }));
       const body = {
         patient_id: patientId,
@@ -518,8 +567,14 @@ async function saveAllRecords() {
       // 保存できた欄から印を外す（途中で失敗した場合、残りの欄は未保存のまま再度保存できる）。
       // 送信中に打ち直された欄は、まだ保存されていないので印を残す。
       for (const c of changed) if (c.el.value === c.sent) delete c.el.dataset.dirty;
+      savedDays++;
+      stoppedAt = null;
     }
     showToast('保存しました');
+  } catch (err) {
+    // 途中で止まったときは、どこまで保存できたかを知らせる（理由は、このあと共通のエラー表示に出る）
+    if (stoppedAt) showToast(`${savedDays} 日分は保存しました。${stoppedAt} の分から後は、まだ保存されていません（入力は画面に残っています）`);
+    throw err;
   } finally {
     savingRecords = false;
     if (button) { button.disabled = false; button.textContent = '一括保存'; }
@@ -552,18 +607,36 @@ function selectSummaryWard(wardId) {
   document.querySelector(`#sum-ward-buttons .ward-btn[onclick="selectSummaryWard(${wardId})"]`).classList.add('active');
 }
 
+let summarySeq = 0;   // 月次集計の読み込みの通し番号（いちばん新しい読み込みの結果だけを画面に出す）
+
 async function loadSummary() {
   const ym = document.getElementById('sum-month').value;
   if (!ym) return;
   const [year, month] = ym.split('-');
+  const box = document.getElementById('summary-table');
+  const seq = ++summarySeq;
+  // 先に前の表を消す。読み込みに失敗したとき、前に表示した月の表が残って、いまの月の表に見えるのを防ぐ
+  box.innerHTML = '<p class="no-patient">読み込み中…</p>';
 
-  let patients = await api('/patients' + (selectedSummaryWardId ? `?ward_id=${selectedSummaryWardId}` : ''));
-  patients = patients.filter(p => p.active);
+  let summaries;
+  try {
+    const params = new URLSearchParams({ activity_year: year, activity_month: month });
+    if (selectedSummaryWardId) params.set('ward_id', selectedSummaryWardId);
+    let patients = await api('/patients?' + params);
+    // 無効にした患者（退院など）も、その月に実績があれば出す（出さないと、月の途中で退院した患者が、月末の集計から黙って抜ける）
+    patients = patients.filter(p => p.active || p.has_records);
 
-  const summaries = await Promise.all(patients.map(p =>
-    api(`/records/summary?patient_id=${p.id}&year=${year}&month=${month}`)
-      .then(s => ({ ...p, ...s }))
-  ));
+    summaries = await Promise.all(patients.map(p =>
+      api(`/records/summary?patient_id=${p.id}&year=${year}&month=${month}`)
+        .then(s => ({ ...p, ...s }))
+    ));
+  } catch (err) {
+    if (seq === summarySeq) box.innerHTML = '<p class="no-patient">読み込めませんでした。もう一度「集計表示」を押してください</p>';
+    throw err;
+  }
+  if (seq !== summarySeq) return;   // あとから始めた読み込みがある。古い結果で表を書き換えない
+  const wardLabel = selectedSummaryWardId
+    ? (document.querySelector('#sum-ward-buttons .ward-btn.active')?.textContent || '').trim() : '全病棟';
 
   const thead = `<tr>
     <th>病棟</th><th>患者名</th>
@@ -574,7 +647,7 @@ async function loadSummary() {
   const tbody = summaries.map(s => `
     <tr>
       <td>${esc(s.ward_name)}</td>
-      <td>${esc(s.name)}</td>
+      <td>${esc(s.name)}${s.active ? '' : '（無効）'}</td>
       <td class="num">${esc(s.mealTotals?.breakfast||0)}</td>
       <td class="num">${esc(s.mealTotals?.lunch||0)}</td>
       <td class="num">${esc(s.mealTotals?.dinner||0)}</td>
@@ -584,7 +657,8 @@ async function loadSummary() {
       <td><a class="pdf-btn" href="/api/pdf?patient_id=${Number(s.id)}&year=${Number(year)}&month=${Number(month)}" target="_blank">PDF</a></td>
     </tr>`).join('');
 
-  document.getElementById('summary-table').innerHTML = `
+  box.innerHTML = `
+    <p class="summary-caption">${esc(year)}年${Number(month)}月　${esc(wardLabel)}　${summaries.length} 名</p>
     <div class="summary-wrap">
       <table class="summary-table">
         <thead>${thead}</thead>
@@ -881,7 +955,7 @@ async function deleteUser(id) {
   if (!confirm(`ユーザー「${username}」を削除しますか？`)) return;
   // 失敗時のメッセージ表示・セッション切れの処理は api() の共通処理に任せる
   await api(`/users/${id}`, { method: 'DELETE' });
-  renderMasterUsers();
+  renderMasterUsers({ keepInputsExcept: id });   // ほかの行に入力中の内容は残す
 }
 
 async function addUser() {
@@ -892,7 +966,7 @@ async function addUser() {
   // パスワードが基準を満たさないときは、サーバーが理由を返す（共通のエラー表示に出る。入力欄はそのまま残る）
   await api('/users', { method: 'POST', body: { username, password, role } });
   showToast(`ユーザー「${username}」を追加しました`);
-  renderMasterUsers();
+  renderMasterUsers({ keepInputsExcept: null });   // 一覧を読み直しても、ほかの行に入力中の内容は残す
 }
 
 // ログイン失敗の連続によるロックを解除する
@@ -900,7 +974,7 @@ async function unlockUser(id) {
   const username = masterUsers.find(x => x.id == id)?.username ?? '';
   await api(`/users/${id}/unlock`, { method: 'POST' });
   showToast(`「${username}」のロックを解除しました`);
-  renderMasterUsers();
+  renderMasterUsers({ keepInputsExcept: null });   // 一覧を読み直しても、入力中の内容は残す
 }
 
 // --- 操作ログ ---

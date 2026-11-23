@@ -517,6 +517,7 @@ function runResetTool(args, env, input = '') {
     check('連打の確認に使うユーザー作成', (await mk('smoke_flood', 'viewer')) === 200);
     const flooder = client('10.9.4.1');
     await loginAs(flooder, 'smoke_flood', TEST_PASSWORD);
+    const floodStart = Date.now();
     let listOk = 0, sent = 0;
     await Promise.all(Array.from({ length: 30 }, async () => {
       while (sent < USER_PER_MINUTE) {
@@ -533,16 +534,23 @@ function runResetTool(args, env, input = '') {
       await flooder('GET', '/api/pdf?' + target),
     ];
     const refusedBodies = await Promise.all(refused.map(r => r.text()));
+    const floodSeconds = (Date.now() - floodStart) / 1000;
     await sleep(1300);   // 書き込みがファイルに確定するのを待つ
     const floodLog = readAudit().split('\n').filter(l => l.includes('"smoke_flood"'))
       .map(l => { try { return JSON.parse(l); } catch (_) { return {}; } }).filter(r => r.user === 'smoke_flood');
-    check(`同じユーザーが1分間に ${USER_PER_MINUTE} 件を超える要求を送ると、超えた分は処理されずに断られる（429。実績・月次集計・PDF は返らない）`,
-      listOk === USER_PER_MINUTE && refused.every(r => r.status === 429) && refusedBodies.every(b => b.length < 300 && !b.startsWith('%PDF')),
-      `一覧 ${listOk} 件は成功 → その後の3件は ${refused.map(r => r.status).join(',')}`);
-    check('受け付けた要求はすべて1件ずつ記録され、断った要求は「表示した」と記録されない（記録に残らない表示・出力は起きない）',
-      floodLog.filter(r => r.action === 'patients.list' && r.status === 200).length === USER_PER_MINUTE &&
-      !floodLog.some(r => ['records.view', 'summary.view', 'pdf.export'].includes(r.action)),
-      `一覧の記録 ${floodLog.filter(r => r.action === 'patients.list').length} 行`);
+    if (floodSeconds > 50) {
+      // 上限は「1分間の枠」ごとに数える。この機械では、枠の中で送り終えられなかった（上限に達する前に枠が切り替わる）ので、
+      // 下の2項目は判定できない。不合格にはしない（遅い機械で、誤って不合格と表示しないため）
+      console.log(`SKIP 同じユーザーの要求の上限の確認（${USER_PER_MINUTE} 件の送信に ${floodSeconds.toFixed(0)} 秒かかったため、この機械では判定できません。不合格ではありません）`);
+    } else {
+      check(`同じユーザーが1分間に ${USER_PER_MINUTE} 件を超える要求を送ると、超えた分は処理されずに断られる（429。実績・月次集計・PDF は返らない）`,
+        listOk === USER_PER_MINUTE && refused.every(r => r.status === 429) && refusedBodies.every(b => b.length < 300 && !b.startsWith('%PDF')),
+        `一覧 ${listOk} 件は成功 → その後の3件は ${refused.map(r => r.status).join(',')}（${floodSeconds.toFixed(0)} 秒）`);
+      check('受け付けた要求はすべて1件ずつ記録され、断った要求は「表示した」と記録されない（記録に残らない表示・出力は起きない）',
+        floodLog.filter(r => r.action === 'patients.list' && r.status === 200).length === USER_PER_MINUTE &&
+        !floodLog.some(r => ['records.view', 'summary.view', 'pdf.export'].includes(r.action)),
+        `一覧の記録 ${floodLog.filter(r => r.action === 'patients.list').length} 行`);
+    }
     check('連打したユーザー以外は、その間も普通に使える', (await admin('GET', '/api/patients')).status === 200);
 
     // 未ログインの要求を大量に送られても、1件ずつ記録するのは1分あたり一定の件数までで、本文は記録しない

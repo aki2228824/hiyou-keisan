@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { requireRole } = require('../middleware/auth');
-const { toPositiveInt, isPlainValue } = require('../services/prices');
+const { toPositiveInt, isPlainValue, parseYearMonth } = require('../services/prices');
 
 // 実在する病棟のIDなら数値で返す。存在しなければ null
 function findWardId(ward_id) {
@@ -11,11 +11,28 @@ function findWardId(ward_id) {
 }
 
 router.get('/', (req, res) => {
-  const { ward_id } = req.query;
-  if (!isPlainValue(ward_id))
+  const { ward_id, activity_year, activity_month } = req.query;
+  if (!isPlainValue(ward_id) || !isPlainValue(activity_year) || !isPlainValue(activity_month))
     return res.status(400).json({ error: '検索条件の指定が正しくありません' });
-  let sql = `SELECT p.*, w.name as ward_name FROM patients p JOIN wards w ON p.ward_id=w.id`;
+
+  // ?activity_year=YYYY&activity_month=M を付けると、その月に実績（数量が 1 以上の日用品、または食事・加算・
+  // サービス提供の状況の入力）がある患者に has_records = 1 を付けて返す。
+  // 月次集計で、無効にした患者（退院など）のうち、その月に実績がある人を出すために使う
+  let activity = '';
   const params = [];
+  if ((activity_year ?? '') !== '' || (activity_month ?? '') !== '') {
+    const ym = parseYearMonth(activity_year, activity_month);
+    if (ym.error) return res.status(400).json({ error: '年月の指定が正しくありません' });
+    const from = `${ym.year}-${String(ym.month).padStart(2, '0')}-01`;
+    const to = `${ym.year}-${String(ym.month).padStart(2, '0')}-31`;
+    activity = `,
+      (EXISTS (SELECT 1 FROM records r WHERE r.patient_id=p.id AND r.record_date BETWEEN ? AND ? AND r.quantity > 0)
+       OR EXISTS (SELECT 1 FROM meal_records m WHERE m.patient_id=p.id AND m.record_date BETWEEN ? AND ?
+                  AND (m.breakfast > 0 OR m.lunch > 0 OR m.dinner > 0 OR m.hospital_addition > 0 OR m.hospital_special > 0
+                       OR COALESCE(m.service_status, '') <> ''))) AS has_records`;
+    params.push(from, to, from, to);
+  }
+  let sql = `SELECT p.*, w.name as ward_name${activity} FROM patients p JOIN wards w ON p.ward_id=w.id`;
   if (ward_id) { sql += ' WHERE p.ward_id=?'; params.push(ward_id); }
   sql += ' ORDER BY w.id, p.name';
   res.json(db.query(sql, params));

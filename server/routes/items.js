@@ -65,7 +65,7 @@ router.post('/prices', requireRole('admin'), (req, res) => {
   if (ym.error) return res.status(400).json({ error: ym.error });
   const price = unit_price == null || unit_price === '' ? null : toPrice(unit_price);
   if (price === null)
-    return res.status(400).json({ error: '単価は0以上の数値で指定してください' });
+    return res.status(400).json({ error: '単価は、0〜9,999,999 の整数（円）で入力してください（小数は使えません）' });
 
   db.run(`
     INSERT INTO prices (item_id, year, month, unit_price) VALUES (?,?,?,?)

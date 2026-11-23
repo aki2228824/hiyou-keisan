@@ -62,7 +62,16 @@ router.get('/', async (req, res) => {
     )[0];
     if (!patient) return res.status(404).json({ error: '患者が見つかりません' });
 
-    const items = db.query('SELECT * FROM items WHERE active=1 ORDER BY sort_order, id');
+    // 載せる物品: 有効なものと、無効でもこの患者・この月に実績があるもの。
+    // 月次集計は、無効にした物品の実績も金額に含める。ここで有効なものだけにすると、同じ月の「日用品費合計」が
+    // 月次集計と食い違う（月の途中で取り扱いをやめた物品を無効にした場合など）
+    const items = db.query(`
+      SELECT * FROM items i
+      WHERE i.active=1
+         OR EXISTS (SELECT 1 FROM records r
+                    WHERE r.item_id=i.id AND r.patient_id=? AND r.record_date BETWEEN ? AND ? AND r.quantity > 0)
+      ORDER BY i.sort_order, i.id
+    `, [patient_id, from, to]);
 
     // 単価取得（当月に設定が無ければ直近の過去月から引き継ぐ）
     const priceMap = getItemPriceMap(year, month);
@@ -115,6 +124,11 @@ router.get('/', async (req, res) => {
     const mealTotal = meals.reduce((s, m) => s + m.breakfast + m.lunch + m.dinner, 0);
 
     const html = buildHtml({ patient, items, priceMap, recordMap, mealMap, days, itemTotals, grandTotal, mealTotal, year, month });
+
+    // 確認用: ?format=html を付けると、PDF にする前の内容をそのまま文字として返す（回帰テストで、PDF に載る金額が
+    // 月次集計と合っていることを確かめるため。ブラウザーで HTML として表示されないよう、種類は text/plain にする）。
+    // 操作ログには、PDF の出力と同じ「請求書PDFの出力」として残る
+    if (req.query.format === 'html') return res.type('text/plain; charset=utf-8').send(html);
 
     // 描画に失敗しても Chrome のプロセスが残らないよう、必ず finally で閉じる
     const pdf = await withPdfSlot(async () => {
