@@ -202,6 +202,25 @@ function check(name, cond, detail) {
   const monthAfterFile = path.join(dir, `audit-${monthAfter.getFullYear()}-${String(monthAfter.getMonth() + 1).padStart(2, '0')}.jsonl`);
   check('34c. 月が替わって新しいファイルができたときは、「無くなっていた」とは書かない',
     fs.readFileSync(monthAfterFile, 'utf8').trim().split('\n').length === 1 && !fs.readFileSync(monthAfterFile, 'utf8').includes('audit.gap'));
+  // 今月のファイルを、同じ名前の別のファイルに置き換えられた場合（名前を変えて、空のファイルを置く）。
+  // ファイルが「在るか」だけを確かめていると気づけず、画面からは見えない元のファイルへ書き続けてしまう
+  audit.recordSystem('server.start', { step: '置き換えの前' });
+  fs.renameSync(file, file + '.bak');
+  fs.writeFileSync(file, '');
+  const wroteAfterReplace = audit.recordSystem('server.start', { step: '置き換えのあと' });
+  const afterReplace = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  check('34d. 今月のファイルを同じ名前の別のファイルに置き換えられても、いま在るファイルに書き、「置き換えられていた」ことが残る（見えないファイルへ書き続けない）',
+    wroteAfterReplace && afterReplace.length === 2 && afterReplace[0].action === 'audit.gap' && afterReplace[0].detail.how === 'replaced' &&
+    afterReplace[1].detail.step === '置き換えのあと' && !fs.readFileSync(file + '.bak', 'utf8').includes('置き換えのあと'),
+    `いまのファイル ${afterReplace.length} 行`);
+  // 中身を消された（0 バイトに切り詰められた）場合
+  audit.recordSystem('server.start', { step: '切り詰めの前' });
+  fs.truncateSync(file, 0);
+  audit.recordSystem('server.start', { step: '切り詰めのあと' });
+  const afterTruncate = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  check('34e. 今月のファイルの中身を消されても（切り詰め）、「短くなっていた」ことが残る',
+    afterTruncate.length === 2 && afterTruncate[0].action === 'audit.gap' && afterTruncate[0].detail.how === 'shrunk' && afterTruncate[1].detail.step === '切り詰めのあと',
+    `いまのファイル ${afterTruncate.length} 行`);
 
   // 保存先が使えなくなっても例外にならず、失敗した件数が分かる。直ったら書き込みを再開する
   audit._test.close();
@@ -418,6 +437,13 @@ function check(name, cond, detail) {
   fs.appendFileSync(file2, JSON.stringify({ t: today + 'T12:00:00.000+09:00', user: 'mukashi', action: 'records.view', status: 200, patient_id: 4344, detail: { z: 'x\u2028y' } }) + '\n');
   r2 = await audit.read({ from: today, to: today, limit: 500, patientId: 4344 });
   check('62. 以前に書かれた、行区切りの文字がそのまま入っている行も読める', r2.rows.length === 1 && r2.rows[0].user === 'mukashi' && r2.rows[0].detail.z === 'x\u2028y');
+  // 先頭に BOM が付いたファイル（メモ帳などで開いて保存し直した場合）でも、最初の1件を読める
+  const bomFile = path.join(path.dirname(file2), 'audit-2020-01.jsonl');
+  fs.writeFileSync(bomFile, String.fromCharCode(0xfeff) +
+    ['01', '02'].map(day => JSON.stringify({ t: `2020-01-${day}T09:00:00.000+09:00`, user: 'bom', action: 'records.view', status: 200, patient_id: 1 })).join('\n') + '\n');
+  r2 = await audit.read({ from: '2020-01-01', to: '2020-01-31', limit: 10 });
+  check('62b. 先頭に BOM が付いたファイルでも、最初の1件を読める（読めない行にならない）', r2.rows.length === 2 && r2.unreadable === 0, `${r2.rows.length} 件 / 読めない行 ${r2.unreadable}`);
+  fs.rmSync(bomFile, { force: true });
   // 読めない行は、黙って飛ばさずに行数を返す（画面に「読めない行がある」と出すため）
   const unreadableBefore = (await audit.read({ from: today, to: today, limit: 500 })).unreadable;
   fs.appendFileSync(file2, '{"t":"' + today + 'T12:00:01.000+09:00","user":"kowareta","action":"records.view","patient_id":4345\n' + 'でたらめな行\n');

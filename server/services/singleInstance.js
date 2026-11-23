@@ -17,8 +17,8 @@ const crypto = require('crypto');
 const PROBE_TIMEOUT_MS = 3000;
 const held = new Map();   // 名前 → このプロセスが待ち受けているサーバー
 
-// DB ファイルの場所から、待ち受ける名前を決める（同じファイルなら、書き方が違っても同じ名前になるようにする）
-function nameFor(dbPath) {
+// DB ファイルの実際の場所（リンクや別の書き方をたどった先）
+function realPathOf(dbPath) {
   let real = path.resolve(dbPath);
   try {
     real = fs.realpathSync.native(real);
@@ -26,6 +26,30 @@ function nameFor(dbPath) {
     // まだ無いファイル（新規の DB）は、フォルダの実際の場所 + ファイル名
     try { real = path.join(fs.realpathSync.native(path.dirname(real)), path.basename(real)); } catch (_e) { /* フォルダもまだ無い */ }
   }
+  return real;
+}
+
+// Windows で、ネットワーク上の場所（\\サーバー\共有\… の形）を指しているか。
+// 共有フォルダ越しの DB は、同じファイルでも機械や書き方によって別の名前になるので、二重に開くことを防げない
+// （例: \\localhost\C$\hiyou\data\hiyou.db と C:\hiyou\data\hiyou.db。ほかの PC からは、名前付きパイプそのものが届かない）
+function isNetworkPath(real) {
+  if (process.platform !== 'win32') return false;
+  if (/^\\\\\?\\UNC\\/i.test(real)) return true;      // \\?\UNC\サーバー\共有\…
+  return /^\\\\[^?.\\]/.test(real);                   // \\サーバー\共有\…（\\?\C:\… と \\.\… は、この機械の中の場所）
+}
+
+function networkPathError(dbPath) {
+  const err = new Error(
+    `DB の場所が、ネットワーク上（共有フォルダ）を指しています: ${dbPath}\n` +
+    'DB は、アプリを動かす機械のローカルディスクに置いてください（例: DB_PATH=C:/hiyou/data/hiyou.db）。\n' +
+    '共有フォルダに置くと、同じ DB を2つのプロセスで開くことを防げず、互いの保存を上書きして入力が消えます。何も変更していません。');
+  err.code = 'DB_ON_NETWORK';
+  return err;
+}
+
+// DB ファイルの場所から、待ち受ける名前を決める（同じファイルなら、書き方が違っても同じ名前になるようにする）
+function nameFor(dbPath) {
+  let real = realPathOf(dbPath);
   if (process.platform === 'win32') real = real.toLowerCase();
   const id = crypto.createHash('sha256').update(real).digest('hex').slice(0, 24);
   return process.platform === 'win32'
@@ -97,6 +121,8 @@ function busyError(dbPath, info) {
  * @param {'app'|'tool'} role  相手に名乗る種類
  */
 async function acquire(dbPath, role = 'app') {
+  // ネットワーク上の場所（共有フォルダ）の DB は開かない。例外の code は 'DB_ON_NETWORK'
+  if (isNetworkPath(realPathOf(dbPath)) || isNetworkPath(path.resolve(dbPath))) throw networkPathError(dbPath);
   const name = nameFor(dbPath);
   if (held.has(name)) return true;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -132,4 +158,4 @@ async function inUse(dbPath) {
   return { held: other.held, info: other.info || null };
 }
 
-module.exports = { acquire, release, inUse, nameFor };
+module.exports = { acquire, release, inUse, nameFor, isNetworkPath };

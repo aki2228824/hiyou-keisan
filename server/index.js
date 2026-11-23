@@ -197,7 +197,7 @@ singleInstance.acquire(db.dbPath).then(() => {
     })().catch(err => console.error('Chrome の確認に失敗しました:', err.message));
   });
 }).catch(err => {
-  if (err && err.code === 'DB_IN_USE') console.error('起動を中止しました: ' + err.message);
+  if (err && (err.code === 'DB_IN_USE' || err.code === 'DB_ON_NETWORK')) console.error('起動を中止しました: ' + err.message);
   else console.error('DB初期化エラー:', err);
   process.exit(1);
 });

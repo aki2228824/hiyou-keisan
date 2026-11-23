@@ -38,7 +38,15 @@ let lastError = null;        // 直近の失敗 { at, message }
 let lastReportedAt = 0;
 let knownFile = '';          // いちど開いた（＝在ることが分かっている）月のファイル名
 let writtenSinceCheck = 0;   // 最後に「ファイルが在る」と確かめたあとに書いた件数
-let removedSince = null;     // 今月のファイルが無くなっていたのを見つけたとき { lost }。次の1行を書くときに記録へ残す
+let removedSince = null;     // 今月のファイルが無くなっていた・置き換えられていた・短くなっていたのを見つけたとき { lost, how }。次の1行を書くときに記録へ残す
+let expectedSize = 0n;       // 開いているファイルの、自分が書いた分までの大きさ（バイト）
+
+// 「記録の欠落」として残す文（操作ログの画面では、このあとに「：N件」が付く）
+const GAP_NOTES = {
+  missing: '今月の操作ログのファイルが無くなっていたので、作り直した（消されたか、名前を変えられた）。これより前の今月の記録は、このファイルに残っていない（バックアップを確認する）。無くなる直前に書いた件数',
+  replaced: '今月の操作ログのファイルが、同じ名前の別のファイルに置き換えられていた。これより前の今月の記録が、このファイルには欠けていることがある（バックアップを確認する）。置き換えに気づく直前に書いた件数',
+  shrunk: '今月の操作ログのファイルが、短くなっていた（中身を消されたか、切り詰められた）。これより前の今月の記録が欠けている（バックアップを確認する）。短くなったことに気づく直前に書いた件数',
+};
 
 const pad = (n, len = 2) => String(n).padStart(len, '0');
 
@@ -56,8 +64,13 @@ const LINE_HEAD = /^\{"t":"\d{4}-\d{2}-\d{2}T/;
 // （readline は U+2028・U+2029 でも行を分けるので使わない。以前に書かれた、その文字がそのまま入っている行も読めるようにする）
 async function* linesOf(file) {
   let rest = '';
+  let first = true;
   for await (const chunk of fs.createReadStream(file, { encoding: 'utf8' })) {
-    const text = rest + chunk;
+    let text = rest + chunk;
+    // ファイルの先頭に BOM（メモ帳などで保存し直すと付くことがある目印）があれば、読み飛ばす
+    // （そのままだと、最初の1件が「読めない行」になる）
+    if (first && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    first = false;
     let start = 0;
     for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', start)) {
       yield text.slice(start, at);
@@ -91,16 +104,31 @@ function closeFile() {
   fdName = '';
 }
 
+// 開いているファイルが、いまもその名前でそこに在る「同じファイル」かを確かめる。
+// 'same' = そのまま / 'missing' = 無くなった / 'replaced' = 同じ名前の別のファイルに置き換えられた / 'shrunk' = 短くなった（中身を消された）
+function checkOpenFile(file) {
+  let onDisk, mine;
+  try { onDisk = fs.statSync(file, { bigint: true }); } catch (_) { return 'missing'; }
+  try { mine = fs.fstatSync(fd, { bigint: true }); } catch (_) { return 'missing'; }
+  // ファイルの番号（NTFS のファイル ID、Linux の i ノード番号）が違えば、別のファイル。番号を返さない保存先（0 になる）では比べない
+  if (onDisk.ino !== 0n && mine.ino !== 0n && (onDisk.ino !== mine.ino || onDisk.dev !== mine.dev)) return 'replaced';
+  if (onDisk.size < expectedSize) return 'shrunk';
+  return 'same';
+}
+
 // その時刻の月のファイルを追記用に開く（開いたままにして使い回す。月が変わったら開き直す）
 function openFor(d) {
   const name = fileNameFor(d);
   const now = Date.now();
   if (fd !== null && name === fdName) {
-    // 開いている間にファイルを消されたり名前を変えられたりすると、見えないファイルへ書き続けてしまう。
-    // ときどき確かめて、無くなっていたら作り直す
+    // 開いている間にファイルを消されたり、名前を変えられたり、別のファイルに置き換えられたりすると、
+    // 画面からは見えないファイルへ書き続けてしまう。ときどき確かめて、変わっていたら開き直す
     if (now - lastCheckedAt < checkIntervalMs) return;
     lastCheckedAt = now;
-    if (fs.existsSync(path.join(dir, name))) { writtenSinceCheck = 0; return; }
+    const state = checkOpenFile(path.join(dir, name));
+    if (state === 'same') { writtenSinceCheck = 0; return; }
+    // 置き換えられた・短くなった場合は、ファイルは在るので、下の「無くなっていた」の判定には掛からない。ここで控える
+    if (state !== 'missing' && !removedSince) removedSince = { lost: writtenSinceCheck, how: state };
   }
   closeFile();
   const file = path.join(dir, name);
@@ -109,7 +137,7 @@ function openFor(d) {
   // いちど開いた月のファイルが無くなっていたら、消された（または名前を変えられた・フォルダごと移された）ということ。
   // 作り直して続けるが、「無くなっていた」ことを新しいファイルの先頭に残す（黙って作り直すと、消されたことが分からない）。
   // lost は、最後に「在る」と確かめたあとに書いた件数（無くなったファイルへ書いた分を含む）
-  if (size < 0 && knownFile === name && !removedSince) removedSince = { lost: writtenSinceCheck };
+  if (size < 0 && knownFile === name && !removedSince) removedSince = { lost: writtenSinceCheck, how: 'missing' };
   writtenSinceCheck = 0;
   let needsNewline = false;
   if (size > 0) {
@@ -134,6 +162,8 @@ function openFor(d) {
   lastCheckedAt = now;
   // 最後の行が途中で切れていたら（停電の瞬間など）、改行を足してから続きを書く（次の記録が、切れた行とつながって読めなくなるのを防ぐ）
   if (needsNewline) fs.writeSync(fd, '\n');
+  // いまの大きさを控える。以後は書いた分だけ足していき、ファイルがこれより短くなっていたら「中身を消された」と分かる
+  try { expectedSize = fs.fstatSync(fd, { bigint: true }).size; } catch (_) { expectedSize = 0n; }
 }
 
 // 書き込んだ内容を1秒以内にディスクへ確定させる（1行ごとに確定させると遅いので、まとめて行う）
@@ -165,6 +195,7 @@ function init(dbPath) {
   knownFile = '';
   writtenSinceCheck = 0;
   removedSince = null;
+  expectedSize = 0n;
   try {
     fs.mkdirSync(dir, { recursive: true });
     openFor(new Date());
@@ -190,10 +221,11 @@ function write(entry, d = new Date()) {
       line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { count: unreportedFailures, note: '保存先に書き込めず、記録できなかった件数', last_error: lastError && lastError.message } }) + line;
     }
     if (removedSince) {
-      // 今月のファイルが無くなっていた（消された・名前を変えられた・フォルダごと移された）ので作り直した、という記録を先頭に置く
-      line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { removed: true, count: removedSince.lost, note: '今月の操作ログのファイルが無くなっていたので、作り直した（消されたか、名前を変えられた）。これより前の今月の記録は、このファイルに残っていない（バックアップを確認する）。無くなる直前に書いた件数' } }) + line;
+      // 今月のファイルが無くなっていた・別のファイルに置き換えられていた・短くなっていた、という記録を先に置く
+      line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { removed: true, how: removedSince.how, count: removedSince.lost, note: GAP_NOTES[removedSince.how] || GAP_NOTES.missing } }) + line;
     }
     fs.writeSync(fd, line);
+    expectedSize += BigInt(Buffer.byteLength(line, 'utf8'));
     writtenSinceCheck++;
     removedSince = null;
     unreportedFailures = 0;
