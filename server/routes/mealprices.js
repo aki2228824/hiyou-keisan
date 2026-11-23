@@ -35,6 +35,8 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   if (pid === null) return res.status(400).json({ error: 'patient_id が正しくありません' });
   const ym = parseYearMonth(year, month);
   if (ym.error) return res.status(400).json({ error: ym.error });
+  // 実績と同じく、ありえない年（年を打っている途中の 0002 年など）には保存しない
+  if (ym.year < 2000 || ym.year > 2100) return res.status(400).json({ error: 'year が正しくありません' });
 
   // 単価・上限は整数にそろえてから保存する（空欄は 0、整数として読めないものは 400）。
   // 送られてこなかった項目（undefined）は、その月に効いているいまの値のまま残す
@@ -47,6 +49,10 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   // 存在しない患者への登録を防ぐ（sql.js では外部キー制約が効かないため）
   if (!db.query('SELECT id FROM patients WHERE id=?', [pid])[0])
     return res.status(404).json({ error: '患者が見つかりません' });
+
+  // 4項目とも送られてこなかったときは、何も書かない
+  // （書くと、その月の行ができて、前の月からの引き継ぎがその時点の値で固定されてしまう）
+  if (checked.every(v => v === undefined)) return res.json({ ok: true, changed: false });
 
   // その月に効いている値（その月の設定。無ければ直近の過去月の設定。それも無ければ 0）
   const current = getMealPrices(pid, ym.year, ym.month);

@@ -40,12 +40,14 @@ let knownFile = '';          // いちど開いた（＝在ることが分かっ
 let writtenSinceCheck = 0;   // 最後に「ファイルが在る」と確かめたあとに書いた件数
 let removedSince = null;     // 今月のファイルが無くなっていた・置き換えられていた・短くなっていたのを見つけたとき { lost, how }。次の1行を書くときに記録へ残す
 let expectedSize = 0n;       // 開いているファイルの、自分が書いた分までの大きさ（バイト）
+let unknownChecks = 0;       // ファイルの状態を確かめられなかった回数（続けて）
 
 // 「記録の欠落」として残す文（操作ログの画面では、このあとに「：N件」が付く）
 const GAP_NOTES = {
   missing: '今月の操作ログのファイルが無くなっていたので、作り直した（消されたか、名前を変えられた）。これより前の今月の記録は、このファイルに残っていない（バックアップを確認する）。無くなる直前に書いた件数',
   replaced: '今月の操作ログのファイルが、同じ名前の別のファイルに置き換えられていた。これより前の今月の記録が、このファイルには欠けていることがある（バックアップを確認する）。置き換えに気づく直前に書いた件数',
   shrunk: '今月の操作ログのファイルが、短くなっていた（中身を消されたか、切り詰められた）。これより前の今月の記録が欠けている（バックアップを確認する）。短くなったことに気づく直前に書いた件数',
+  unknown: '今月の操作ログのファイルが、いまもそこに在るかを確かめられない状態が続いている（フォルダの権限、ほかのプログラムを確認する）。記録は書き続けているが、画面から見えるファイルに入っているとは限らない。最後に確かめられたあとに書いた件数',
 };
 
 const pad = (n, len = 2) => String(n).padStart(len, '0');
@@ -111,9 +113,9 @@ function checkOpenFile(file) {
   try {
     onDisk = fs.statSync(file, { bigint: true });
   } catch (err) {
-    // 「無い」と分かったときだけ、無くなったものとして扱う。それ以外の理由（ほかのプログラムが一時的に掴んでいる、など）で
-    // 確かめられなかったときは、変わっていないものとして次の確認に回す（「無くなっていた」と誤って記録しないため）
-    return err && (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? 'missing' : 'same';
+    // 「無い」と分かったときだけ、無くなったものとして扱う。それ以外の理由（ほかのプログラムが一時的に掴んでいる、
+    // フォルダの権限を変えられた、など）で確かめられなかったときは 'unknown'（「無くなっていた」と誤って記録しないため）
+    return err && (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? 'missing' : 'unknown';
   }
   try { mine = fs.fstatSync(fd, { bigint: true }); } catch (_) { return 'missing'; }
   // ファイルの番号（NTFS のファイル ID、Linux の i ノード番号）が違えば、別のファイル。番号を返さない保存先（0 になる）では比べない
@@ -132,7 +134,17 @@ function openFor(d) {
     if (now - lastCheckedAt < checkIntervalMs) return;
     lastCheckedAt = now;
     const state = checkOpenFile(path.join(dir, name));
-    if (state === 'same') { writtenSinceCheck = 0; return; }
+    if (state === 'same') { writtenSinceCheck = 0; unknownChecks = 0; return; }
+    if (state === 'unknown') {
+      // 確かめられなかった。開いているファイルへ書き続けるが、「在る」と確かめたことにはしない（writtenSinceCheck は戻さない）。
+      // 3回続いたら、確かめられない状態が続いていることを、エラーログと操作ログに1回だけ残す
+      if (++unknownChecks === 3) {
+        console.error(`操作ログのファイルの状態を確かめられません（${path.join(dir, name)}）。フォルダの権限と、ほかのプログラムがファイルを掴んでいないかを確認してください。`);
+        if (!removedSince) removedSince = { lost: writtenSinceCheck, how: 'unknown' };
+      }
+      return;
+    }
+    unknownChecks = 0;
     // 置き換えられた・短くなった場合は、ファイルは在るので、下の「無くなっていた」の判定には掛からない。ここで控える
     if (state !== 'missing' && !removedSince) removedSince = { lost: writtenSinceCheck, how: state };
   }
@@ -202,6 +214,7 @@ function init(dbPath) {
   writtenSinceCheck = 0;
   removedSince = null;
   expectedSize = 0n;
+  unknownChecks = 0;
   try {
     fs.mkdirSync(dir, { recursive: true });
     openFor(new Date());
@@ -228,7 +241,7 @@ function write(entry, d = new Date()) {
     }
     if (removedSince) {
       // 今月のファイルが無くなっていた・別のファイルに置き換えられていた・短くなっていた、という記録を先に置く
-      line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { removed: true, how: removedSince.how, count: removedSince.lost, note: GAP_NOTES[removedSince.how] || GAP_NOTES.missing } }) + line;
+      line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { removed: removedSince.how !== 'unknown', how: removedSince.how, count: removedSince.lost, note: GAP_NOTES[removedSince.how] || GAP_NOTES.missing } }) + line;
     }
     fs.writeSync(fd, line);
     expectedSize += BigInt(Buffer.byteLength(line, 'utf8'));

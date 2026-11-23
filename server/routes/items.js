@@ -63,6 +63,8 @@ router.post('/prices', requireRole('admin'), (req, res) => {
     return res.status(400).json({ error: '登録されていない物品です' });
   const ym = parseYearMonth(year, month);
   if (ym.error) return res.status(400).json({ error: ym.error });
+  // 実績と同じく、ありえない年（年を打っている途中の 0002 年など）には保存しない
+  if (ym.year < 2000 || ym.year > 2100) return res.status(400).json({ error: 'year が正しくありません' });
   const price = unit_price == null || unit_price === '' ? null : toPrice(unit_price);
   if (price === null)
     return res.status(400).json({ error: '単価は、0〜9,999,999 の整数（円）で入力してください（小数は使えません）' });

@@ -221,6 +221,25 @@ function check(name, cond, detail) {
   check('34e. 今月のファイルの中身を消されても（切り詰め）、「短くなっていた」ことが残る',
     afterTruncate.length === 2 && afterTruncate[0].action === 'audit.gap' && afterTruncate[0].detail.how === 'shrunk' && afterTruncate[1].detail.step === '切り詰めのあと',
     `いまのファイル ${afterTruncate.length} 行`);
+  // ファイルの状態を確かめられない状態が続いたとき（「無い」以外の理由で確認に失敗する。フォルダの権限を変えられた、など）。
+  // 「無くなっていた」とは書かない。3回続いたら、確かめられないことを1回だけ残す
+  const realStat = fs.statSync;
+  fs.statSync = (p, ...rest) => {
+    if (String(p) === file) throw Object.assign(new Error('EPERM（テスト用に起こしたエラー）'), { code: 'EPERM' });
+    return realStat(p, ...rest);
+  };
+  const realError34 = console.error; let reported34 = '';
+  console.error = (...a) => { reported34 += a.join(' '); };
+  for (let i = 1; i <= 5; i++) audit.recordSystem('server.start', { step: `確かめられない ${i}` });
+  console.error = realError34;
+  fs.statSync = realStat;
+  audit.recordSystem('server.start', { step: '確かめられるようになった' });
+  const afterUnknown = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const gapKinds = afterUnknown.filter(l => l.action === 'audit.gap').map(l => l.detail.how).join(',');
+  check('34f. ファイルの状態を確かめられない状態が続いても、「無くなっていた」とは書かず、3回続いたら「確かめられない」ことを1回だけ残す（記録は書き続ける）',
+    gapKinds === 'shrunk,unknown' && afterUnknown.filter(l => l.action === 'server.start').length === 7 && /状態を確かめられません/.test(reported34) &&
+    afterUnknown.find(l => l.action === 'audit.gap' && l.detail.how === 'unknown').detail.removed === false,
+    `記録の欠落の種類: ${gapKinds} / 全 ${afterUnknown.length} 行`);
 
   // 保存先が使えなくなっても例外にならず、失敗した件数が分かる。直ったら書き込みを再開する
   audit._test.close();

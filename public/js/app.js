@@ -106,8 +106,11 @@ let lastLoginUser = null;   // 直前にこの画面へログインしていた�
 function onLoggedIn() {
   // 別のユーザーがログインしたときは、前のユーザーが開いていた入力表（未保存の入力を含む）を残さない
   if (lastLoginUser !== null && lastLoginUser !== currentUser.username && !savingRecords) {
+    const discarded = hasUnsavedInput();
     selectedPatientId = null;
     clearInputForm();
+    // 黙って消さない（前の人が、保存したつもりで席を離れていることがある）
+    if (discarded) showNotice(`前にこの画面を使っていた「${lastLoginUser}」の、保存していない入力は破棄しました。`);
   }
   lastLoginUser = currentUser.username;
   document.getElementById('header-username').textContent = `${currentUser.username}（${roleName(currentUser.role)}）`;
@@ -142,6 +145,8 @@ function showPage(name) {
 // --- API ヘルパー ---
 // 失敗（2xx以外・通信不能）のときはサーバーのエラーメッセージを持つ Error を投げる。
 // 呼び出し側で catch しなかったものは、下の unhandledrejection でまとめて画面に表示する。
+const API_TIMEOUT_MS = 60000;   // これだけ待っても応答が無ければ、失敗として扱う
+
 async function api(path, opts = {}) {
   let res;
   try {
@@ -149,8 +154,12 @@ async function api(path, opts = {}) {
       headers: { 'Content-Type': 'application/json' },
       ...opts,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
+      // 応答が返ってこない要求を、いつまでも待たない（待ち続けると、「保存中…」のまま、画面を切り替えられなくなる）
+      signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(API_TIMEOUT_MS) : undefined,
     });
   } catch (e) {
+    if (e && e.name === 'TimeoutError')
+      throw new ApiError(`サーバーから応答がありません（${API_TIMEOUT_MS / 1000} 秒待ちました）。サーバーとネットワークの状態を確認してから、もう一度お試しください。`, 0);
     throw new ApiError('サーバーに接続できません。ネットワークとサーバーの状態を確認してください。', 0);
   }
   const data = await res.json().catch(() => null);
@@ -207,6 +216,24 @@ function hasUnsavedInput() {
   return !!document.querySelector('#monthly-tbl .cell-input[data-dirty], #input-form .meal-price-bar input[data-dirty]');
 }
 
+// 月の欄の値が、表を読み込める月か（空や、年を打っている途中の 0002 年などは false）
+function isUsableMonth(ym) {
+  const year = Number(String(ym || '').split('-')[0]);
+  return /^\d{4}-\d{2}$/.test(String(ym || '')) && year >= 2000 && year <= 2100;
+}
+
+// 数字の欄の入力が、0 以上の整数として読めないか（「5-」、マイナス、小数、「1e2」のような書き方）。空欄は読める（0 として扱う）
+function isUnreadable(el) {
+  return el.type === 'number' && (!el.validity.valid || (el.value !== '' && !/^\d+$/.test(el.value)));
+}
+
+// 変更した欄に「未保存」の印を付ける。打ち直して、元の値（最後に読み込んだ・保存した値）に戻ったら、印を外す
+// （元に戻しただけの欄まで送ると、その間にほかの人が保存した値を、元の値で上書きしてしまう）
+function markDirty(el) {
+  if (el.value === el.defaultValue && !isUnreadable(el)) delete el.dataset.dirty;
+  else el.dataset.dirty = '1';
+}
+
 // 入力表を消す。読み込みの途中だった応答があとから届いても、表を書かせない
 function clearInputForm() {
   loadedForm = null;
@@ -232,8 +259,13 @@ async function initInputPage() {
 
   const now = new Date();
   const defaultMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  if (!document.getElementById('sel-month').value)
-    document.getElementById('sel-month').value = defaultMonth;
+  const monthEl = document.getElementById('sel-month');
+  if (!monthEl.value) monthEl.value = defaultMonth;
+  // 月の欄を、ありえない年（2000〜2100 年の外）や空のままにして離れたら、いまの表の月（表が無ければ今月）に戻す
+  // （月の欄と表が食い違ったまま残らないように）
+  monthEl.onblur = () => {
+    if (!isUsableMonth(monthEl.value)) monthEl.value = loadedMonth || defaultMonth;
+  };
 
   document.getElementById('ward-buttons').innerHTML = wards.map(w => `
     <button class="ward-btn ${selectedWardId==w.id?'active':''}"
@@ -266,14 +298,19 @@ async function selectWard(wardId) {
   try {
     await loadPatients();
   } catch (err) {
-    document.getElementById('patient-list').innerHTML = '<p class="no-patient">読み込めませんでした。もう一度、病棟を選んでください</p>';
+    if (selectedWardId === wardId)
+      document.getElementById('patient-list').innerHTML = '<p class="no-patient">読み込めませんでした。もう一度、病棟を選んでください</p>';
     throw err;
   }
 }
 
 async function loadPatients() {
   if (!selectedWardId) return;
-  const patients = await api('/patients?ward_id=' + selectedWardId);
+  const ward = selectedWardId;
+  const patients = await api('/patients?ward_id=' + ward);
+  // 読み込みの間に、別の病棟が選ばれた。遅れて届いた応答で、一覧を書き換えない
+  // （書き換えると、選択中の病棟と違う病棟の患者が並ぶ）
+  if (ward !== selectedWardId) return;
   const active = patients.filter(p => p.active);
   inputPatients = active;
 
@@ -289,6 +326,11 @@ let selectSeq = 0;   // 患者を選んだ回数（読み込みに失敗した�
 
 async function selectPatient(patientId) {
   if (busySaving()) return;
+  // 月の欄が空・ありえない年のままでは、表を読み込めない。黙って何も起きない、ということが無いように知らせる
+  if (!isUsableMonth(document.getElementById('sel-month').value)) {
+    showToast('左の「対象月」を選んでから、患者を選んでください');
+    return;
+  }
   if (!confirmDiscardUnsaved()) return;
   const mySelect = ++selectSeq;
   selectedPatientId = patientId;
@@ -325,7 +367,7 @@ async function loadInputForm() {
   const [year, month] = ym.split('-');
   // 月の欄にキーボードで年を打っている途中（0002 年、0020 年…）は、何もしない。
   // 打ち終わる前に読み込みや確認が走ると、ありえない年の表が出て、そのまま保存もできてしまう
-  if (!(Number(year) >= 2000 && Number(year) <= 2100)) return;
+  if (!isUsableMonth(ym)) return;
   // 対象月を切り替えたとき：未保存の変更があれば確認し、取りやめるなら月の表示を元に戻す
   if (loadedMonth && ym !== loadedMonth && !confirmDiscardUnsaved()) {
     monthEl.value = loadedMonth;
@@ -478,7 +520,7 @@ async function loadInputForm() {
 
   // 入力のたびに、変更した欄へ「未保存」の印を付けて小計を再計算する（保存時は印の付いた欄だけを送る）
   document.getElementById('monthly-tbl').addEventListener('input', e => {
-    if (e.target.classList.contains('cell-input')) e.target.dataset.dirty = '1';
+    if (e.target.classList.contains('cell-input')) markDirty(e.target);
     updateSubtotals(activeItems);
   });
 
@@ -494,7 +536,7 @@ async function loadInputForm() {
   // 食事単価・上限変更時に食事費合計を即時更新。変更した欄には「未保存」の印を付ける
   // （「一括保存」で一緒に保存し、保存せずに切り替えようとしたら確認を出すため）
   MEAL_PRICE_INPUTS.forEach(id => {
-    document.getElementById(id)?.addEventListener('input', e => { e.target.dataset.dirty = '1'; updateMealCostTotal(); });
+    document.getElementById(id)?.addEventListener('input', e => { markDirty(e.target); updateMealCostTotal(); });
   });
 
   // 初期表示で上限ラベルを更新
@@ -552,7 +594,7 @@ const MEAL_PRICE_KEYS = { 'mp-breakfast': 'breakfast_price', 'mp-lunch': 'lunch_
 // 数字の欄に、数字として読めない入力（「5-」「5e」、マイナス、小数）が無いかを確かめる。あれば知らせて、その欄を返す。
 // ブラウザーは、読めない入力を「空」として扱う。確かめずに保存すると 0（＝実績の削除）として保存され、「保存しました」と出てしまう
 function findUnreadableInput(inputs) {
-  const bad = inputs.find(el => el.type === 'number' && !el.validity.valid);
+  const bad = inputs.find(isUnreadable);
   if (!bad) return null;
   const where = bad.dataset.date ? `${bad.dataset.date} の欄` : '食事単価・上限の欄';
   bad.focus();
@@ -573,7 +615,10 @@ async function saveMealPrices(patientId, year, month, opts = {}) {
   dirty.forEach((el, i) => { body[MEAL_PRICE_KEYS[el.id]] = Number(sent[i]) || 0; });
   await api('/meal-prices', { method: 'POST', body });
   // 保存できた欄から「未保存」の印を外す（送信中に打ち直された欄は、まだ保存されていないので残す）
-  dirty.forEach((el, i) => { if (el.value === sent[i]) delete el.dataset.dirty; });
+  dirty.forEach((el, i) => {
+    el.defaultValue = sent[i];   // 保存した値を「元の値」にする
+    if (el.value === sent[i] && !isUnreadable(el)) delete el.dataset.dirty;
+  });
   updateMealCostTotal();
   if (!opts.quiet) showToast('食事単価を保存しました');
   return true;
@@ -613,7 +658,10 @@ async function saveAllRecords() {
     }
     for (const date of dates) {
       stoppedAt = date;
-      const changed = dirty.filter(el => el.dataset.date === date).map(el => ({ el, sent: el.value }));
+      // 送るのは、いま読める欄だけ。保存の最中に、読めない入力（「2-」など）に打ち直された欄は送らず、未保存の印を残す
+      // （ブラウザーは読めない入力を空として返すので、送ると 0 として保存され、入力済みの実績が消える）
+      const changed = dirty.filter(el => el.dataset.date === date && el.dataset.dirty && !isUnreadable(el)).map(el => ({ el, sent: el.value }));
+      if (!changed.length) { stoppedAt = null; continue; }
       const body = {
         patient_id: patientId,
         record_date: date,
@@ -633,7 +681,10 @@ async function saveAllRecords() {
       await api('/records', { method: 'POST', body });
       // 保存できた欄から印を外す（途中で失敗した場合、残りの欄は未保存のまま再度保存できる）。
       // 送信中に打ち直された欄は、まだ保存されていないので印を残す。
-      for (const c of changed) if (c.el.value === c.sent) delete c.el.dataset.dirty;
+      for (const c of changed) {
+        c.el.defaultValue = c.sent;   // 保存した値を「元の値」にする
+        if (c.el.value === c.sent && !isUnreadable(c.el)) delete c.el.dataset.dirty;
+      }
       savedDays++;
       stoppedAt = null;
     }
