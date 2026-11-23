@@ -11,7 +11,12 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true
 const initSqlJs = require('sql.js');
 const bcrypt = require('bcryptjs');
 
-const file = path.resolve(process.argv[2] || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'hiyou.db'));
+// 引数で指定したファイルは、いまのフォルダから見た場所。.env の DB_PATH は、アプリ（server/database.js）と同じく
+// プロジェクトのフォルダから見た場所（別のフォルダから実行しても、アプリと同じファイルを調べるように）
+const PROJECT_ROOT = path.join(__dirname, '..');
+const envPath = String(process.env.DB_PATH ?? '').trim();
+const file = process.argv[2] ? path.resolve(process.argv[2])
+  : envPath ? path.resolve(PROJECT_ROOT, envPath) : path.join(PROJECT_ROOT, 'data', 'hiyou.db');
 
 (async () => {
   if (!fs.existsSync(file) || fs.statSync(file).size === 0) {

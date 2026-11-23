@@ -325,6 +325,31 @@ function runResetTool(args, env, input = '') {
     check('再設定ツール：アプリが動いている間は、実行を断る（終了コード 1）', whileRunning.code === 1 && /アプリが動いています/.test(whileRunning.out),
       whileRunning.out.trim().split('\n')[0]);
 
+    // .env のポート番号とは違うポートでアプリが動いていると、ポートへつないでみる確認では見つけられない。
+    // その場合でも、同じ DB を開いていることに気づいて断る（以前は「変更しました」と表示し、動いているアプリの次の保存で変更が消えた）
+    const otherPort = String(PORT + 7);
+    const dbWhileRunning = sha256(copy);
+    const startsBefore = (readAudit().match(/"server\.start"/g) || []).length;
+    const undetected = await runResetTool([login.username], { ...toolEnv, PORT: otherPort }, `${NEW_PASSWORD}\n${NEW_PASSWORD}\n`);
+    check('再設定ツール：アプリが別のポートで動いていても、同じ DB を開いていることに気づいて断る（DB は書き換えない）',
+      undetected.code === 1 && /ほかのプロセスが使用中/.test(undetected.out) && sha256(copy) === dbWhileRunning, undetected.out.trim().split('\n')[0]);
+    // 同じ DB を使う2つ目のアプリは、ポート番号が違っていても起動しない
+    // （2つのプロセスが同じ DB を開くと、それぞれがファイル全体を書き出すので、互いの保存を上書きして入力が消える）
+    const second = await new Promise(resolve => {
+      const child = spawn(process.execPath, [path.join(APP, 'server', 'index.js')], {
+        cwd: APP, env: { ...process.env, DB_PATH: copy, PORT: otherPort, HOST: '127.0.0.1', EXPORT_ENABLED: 'false', AUDIT_LOG_DIR: auditDir },
+      });
+      let out = '';
+      child.stdout.on('data', d => (out += d));
+      child.stderr.on('data', d => (out += d));
+      const timer = setTimeout(() => child.kill(), 20000);   // 起動してしまった場合は、止めて不合格にする
+      child.on('exit', code => { clearTimeout(timer); resolve({ code, out }); });
+    });
+    check('同じ DB を使う2つ目のアプリは、別のポートを指定しても起動しない（DB も操作ログも書き換えない）。動いているアプリは、そのまま使える',
+      second.code === 1 && /起動を中止しました/.test(second.out) && /ほかのプロセスが使用中/.test(second.out) && sha256(copy) === dbWhileRunning &&
+      (readAudit().match(/"server\.start"/g) || []).length === startsBefore && (await admin('GET', '/api/wards')).status === 200,
+      second.out.trim().split('\n')[0]);
+
     // リバースプロキシ（HTTPS終端）経由を模した要求では、Cookie に Secure が付く
     const viaProxy = client('192.168.1.77', { 'X-Forwarded-Proto': 'https' });
     const proxied = await loginAs(viaProxy, 'smoke_staff', TEST_PASSWORD);
@@ -548,6 +573,14 @@ function runResetTool(args, env, input = '') {
       check('再設定ツール：DB が見つからないときは中止し、DB を新しく作らない',
         noDb.code === 1 && /DBファイルが見つかりません/.test(noDb.out) && !fs.existsSync(path.dirname(missing)), noDb.out.trim().split('\n')[0]);
       const RESET_PASSWORD = 'Saisettei-4n8v2c6x1';
+      // 一覧の表示や、途中で中止になる場合は、DB ファイルを書き換えない（以前は、開いただけでファイルを書き直していた）
+      const dbStopped = sha256(copy), mtimeStopped = fs.statSync(copy).mtimeMs;
+      const listed = await runResetTool(['--list'], toolEnv);
+      const unknown = await runResetTool(['smoke_touroku_nashi'], toolEnv, 'x\nx\n');
+      const mismatch = await runResetTool([login.username], toolEnv, `${RESET_PASSWORD}\nchigau-${RESET_PASSWORD}\n`);
+      check('再設定ツール：一覧の表示・登録されていないID・入力の不一致では、DB ファイルを書き換えない',
+        listed.code === 0 && listed.out.includes(login.username) && unknown.code === 1 && mismatch.code === 1 && /一致しません/.test(mismatch.out) &&
+        sha256(copy) === dbStopped && fs.statSync(copy).mtimeMs === mtimeStopped, `終了コード ${listed.code},${unknown.code},${mismatch.code}`);
       const reset = await runResetTool([login.username], toolEnv, `${RESET_PASSWORD}\n${RESET_PASSWORD}\n`);
       const SQL = await require('sql.js')();
       const after = new SQL.Database(fs.readFileSync(copy));

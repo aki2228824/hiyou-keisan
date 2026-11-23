@@ -21,6 +21,10 @@ let inTransaction = false;       // transaction() の実行中か（実行中は
 async function getDb() {
   if (db) return db;
 
+  // 同じ DB ファイルを開いているプロセスがほかにいたら、ここで止める（開くと、すぐ下でファイルを書き直すため）。
+  // アプリ本体は起動の最初に確かめているので、ここでは何も起きない。ツールから直接呼ばれたときのための確認
+  await require('./services/singleInstance').acquire(DB_PATH);
+
   const SQL = await initSqlJs();
   const dataDir = path.dirname(DB_PATH);
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });

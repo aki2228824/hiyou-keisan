@@ -27,6 +27,7 @@ const path = require('path');
 const session = require('express-session');
 const db = require('./database');
 const audit = require('./services/auditLog');
+const singleInstance = require('./services/singleInstance');
 const { auditMiddleware, rejectOddUrls } = require('./middleware/audit');
 const { requireAuth, requireRole } = require('./middleware/auth');
 
@@ -86,15 +87,7 @@ try {
   process.exit(1);
 }
 
-// 操作ログの保存先を、DB を開く前に用意する。使えないときは、記録なしで動き続けないよう、ここで起動を止める
-// （DB を開いたあとで止めると、起動に失敗するたびに DB ファイルを書き直してしまう）。
 let auditDir;
-try {
-  auditDir = audit.init(db.dbPath);
-} catch (err) {
-  console.error('操作ログの初期化エラー:', err.message);
-  process.exit(1);
-}
 
 app.use(session({
   secret: process.env.SESSION_SECRET || 'hiyou-keisan-secret-2026',
@@ -113,7 +106,21 @@ app.use(express.json());
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-db.getDb().then(() => {
+// 起動の順番:
+// 1. 同じ DB を使っているプロセスがほかにいないことを確かめる。いたら、何も書き込まずに起動を止める
+//    （2つのプロセスが同じ DB を開くと、互いの保存を上書きして入力が消える。ポート番号が違っていても同じ）。
+// 2. 操作ログの保存先を、DB を開く前に用意する。使えないときは、記録なしで動き続けないよう、ここで起動を止める
+//    （DB を開いたあとで止めると、起動に失敗するたびに DB ファイルを書き直してしまう）。
+// 3. DB を開く。
+singleInstance.acquire(db.dbPath).then(() => {
+  try {
+    auditDir = audit.init(db.dbPath);
+  } catch (err) {
+    console.error('操作ログの初期化エラー:', err.message);
+    process.exit(1);
+  }
+  return db.getDb();
+}).then(() => {
   console.log(`操作ログ: ${auditDir}`);
 
   // 認証（ログイン不要）
@@ -190,6 +197,7 @@ db.getDb().then(() => {
     })().catch(err => console.error('Chrome の確認に失敗しました:', err.message));
   });
 }).catch(err => {
-  console.error('DB初期化エラー:', err);
+  if (err && err.code === 'DB_IN_USE') console.error('起動を中止しました: ' + err.message);
+  else console.error('DB初期化エラー:', err);
   process.exit(1);
 });

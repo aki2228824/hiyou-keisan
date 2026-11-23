@@ -7,7 +7,8 @@ const fs = require('fs');
 const path = require('path');
 
 const file = process.argv[2];
-const appRoot = process.argv[3] || path.join(__dirname, '..');
+// path.resolve: a relative folder such as "." would otherwise be handed to require() as a module name and fail
+const appRoot = path.resolve(process.argv[3] || path.join(__dirname, '..'));
 
 (async () => {
   try {

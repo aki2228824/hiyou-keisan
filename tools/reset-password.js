@@ -9,9 +9,14 @@
 //
 // ・アプリが動いている間は実行できない（動いているアプリは、メモリ上の内容でDBを上書きするので、
 //   ここでの変更が消えたり、逆に利用者の入力を消したりするため）。
-//   動いているかどうかは、このPC自身（127.0.0.1 と ::1）と .env の HOST の、.env の PORT 番へつないで確かめる。
-//   どこかが応答すれば中止する。時間内に応答も拒否も無いとき（重い処理中など）も、動いているものとして中止する。
-//   パスワードの入力を待っている間にアプリが起動した・DBが書き換えられた場合に備えて、書き込む直前にもう一度確かめる。
+//   動いているかどうかは、2つの方法で確かめる。
+//   (1) このPC自身（127.0.0.1 と ::1）と .env の HOST の、.env の PORT 番へつないでみる。どこかが応答すれば中止する。
+//       時間内に応答も拒否も無いとき（重い処理中など）も、動いているものとして中止する。
+//   (2) この DB を開いているプロセスがほかにいないかを確かめる（server/services/singleInstance.js）。
+//       アプリが .env とは違うポートで動いていても、これで分かる。
+//   パスワードの入力を待っている間にアプリが起動した・DBが書き換えられた場合に備えて、書き込む直前にもう一度確かめる
+//   （このツールが DB を使っている間は、アプリを起動しても、アプリの側が起動を中止する）。
+// ・一覧の表示（--list）や、途中で中止した場合は、DB ファイルを書き換えない（読むだけ）。
 // ・DB の場所は、アプリと同じく .env の DB_PATH（無ければ data/hiyou.db）。その場所に DB が無いときは中止する
 //   （DB を新しく作ることはしない。最初に表示される「DBファイル:」の行で、場所を確かめられる）。
 // ・新しいパスワードは、アプリと同じ基準（13文字以上・英字と数字の両方、など）を満たす必要がある。
@@ -116,12 +121,27 @@ function createAsker(input = process.stdin, output = process.stdout) {
   };
 }
 
+// DB を読むだけで、ユーザーの一覧を取り出す（ファイルには何も書かない）
+async function readUsers(dbPath) {
+  const SQL = await require('sql.js')();
+  const file = fs.readFileSync(dbPath);
+  if (file.length === 0) throw new Error('0バイトです。破損の可能性があります');
+  const mem = new SQL.Database(file);
+  try {
+    const res = mem.exec('SELECT id, username, role, active FROM users ORDER BY id');
+    return res.length ? res[0].values.map(([id, username, role, active]) => ({ id, username, role, active })) : [];
+  } finally {
+    mem.close();
+  }
+}
+
 async function main() {
   // .env は、アプリと同じくプロジェクト直下のものを読む（DB の場所とポートを、アプリと同じにするため）
   require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
   const db = require('../server/database');
   const audit = require('../server/services/auditLog');
   const passwordPolicy = require('../server/services/passwordPolicy');
+  const guard = require('../server/services/singleInstance');
   const bcrypt = require('bcryptjs');
 
   const target = process.argv[2];
@@ -158,9 +178,30 @@ async function main() {
     return;
   }
 
-  await db.getDb();   // 「DBファイル: …」の行が表示される
+  // この DB を、このツールが使うことを宣言する。アプリがこの DB を開いていれば、ポート番号が .env と違っていても
+  // （上の確認では見つけられなくても）ここで分かる。宣言している間にアプリを起動しても、アプリの側が「使用中」として
+  // 起動を中止するので、入力を待っている間に内容が食い違うこともない
+  try {
+    await guard.acquire(db.dbPath, 'tool');
+  } catch (err) {
+    if (!err || err.code !== 'DB_IN_USE') throw err;
+    console.error(err.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  // ユーザーの一覧は、DB を読むだけで調べる。ここではまだファイルを書き直さない
+  // （一覧の表示や、途中で中止した場合に、DB ファイルを書き換えないため）
   const opened = fs.statSync(db.dbPath);
-  const users = db.query('SELECT id, username, role, active FROM users ORDER BY id');
+  let users;
+  try {
+    users = await readUsers(db.dbPath);
+  } catch (err) {
+    console.error(`DBファイルを読めません: ${db.dbPath}（${err.message}）\n何も変更していません。`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`DBファイル: ${db.dbPath}（${opened.size.toLocaleString()} バイト）`);
   const show = () => { for (const u of users) console.log(`  ${u.username}（${u.role}・${u.active ? '有効' : '無効'}）`); };
   if (target === '--list') { console.log('登録されているユーザー:'); show(); return; }
 
@@ -215,6 +256,15 @@ async function main() {
     return;
   }
 
+  // ここで初めて、アプリと同じ方法で DB を開く（開くとファイルを書き直す）。場所は上で表示済みなので、ここでの表示は省く
+  const realLog = console.log;
+  console.log = () => {};
+  try { await db.getDb(); } finally { console.log = realLog; }
+  if (!db.query('SELECT id FROM users WHERE id=? AND username=?', [user.id, user.username]).length) {
+    console.error(`ユーザー「${user.username}」が見つからなくなりました。何も変更していません。もう一度実行してください。`);
+    process.exitCode = 1;
+    return;
+  }
   db.run('UPDATE users SET password_hash=?, active=1 WHERE id=?', [bcrypt.hashSync(password, 10), user.id]);
   try {
     audit.init(db.dbPath);

@@ -206,6 +206,26 @@ const fresh = () => { for (const f of fs.readdirSync(workDir)) fs.rmSync(path.jo
     }
   }
 
+  // 同じ DB を2つのプロセスで開けない（開くと、それぞれがメモリ上の内容でファイル全体を書き出すので、互いの保存を消してしまう）。
+  // このプロセスが「使用中」を宣言している間に、別のプロセスから同じ DB を開いて更新しようとする
+  fresh();
+  const guard = require(path.join(__dirname, '..', 'server', 'services', 'singleInstance.js'));
+  const childAsync = mode => new Promise(resolve => {
+    const cp = spawn(process.execPath, [__filename], { env: childEnv(mode), cwd: workDir });
+    let cout = ''; cp.stdout.on('data', d => cout += d);
+    cp.on('exit', code => resolve({ exit: code, res: parse(cout) }));
+  });
+  await guard.acquire(DB, 'tool');
+  before = sha(DB);
+  const mtimeBefore = fs.statSync(DB).mtimeMs;
+  c = await childAsync('run');
+  check('16. ほかのプロセスが使用中の DB は開かず、ファイルも書き換えない（2つのプロセスが同じ DB を開くと、互いの保存を上書きして入力が消える）',
+    /使用中/.test(String(c.res.getDbError || '')) && sha(DB) === before && fs.statSync(DB).mtimeMs === mtimeBefore,
+    `起動エラー: ${c.res.getDbError || '(なし。開いてしまった)'}`);
+  await guard.release(DB);
+  c = await childAsync('open');
+  check('17. 使用中でなくなれば、開ける', c.exit === 0 && !c.res.getDbError && Array.isArray(c.res.wards));
+
   fs.rmSync(workDir, { recursive: true, force: true });
   console.log(`\n結果: 合格 ${passed} / 不合格 ${failed}${failed ? '' : '（全項目合格）'}`);
   process.exit(failed ? 1 : 0);
