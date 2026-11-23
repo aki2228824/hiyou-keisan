@@ -11,7 +11,6 @@
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
-const readline = require('readline');
 
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const MAX_STRING = 200;      // 1つの文字列の上限（超えた分は切る）
@@ -37,8 +36,37 @@ let failedCount = 0;         // 起動してから書き込めなかった件数
 let unreportedFailures = 0;  // そのうち、まだ操作ログに「記録できなかった」と残していない件数
 let lastError = null;        // 直近の失敗 { at, message }
 let lastReportedAt = 0;
+let knownFile = '';          // いちど開いた（＝在ることが分かっている）月のファイル名
+let writtenSinceCheck = 0;   // 最後に「ファイルが在る」と確かめたあとに書いた件数
+let removedSince = null;     // 今月のファイルが無くなっていたのを見つけたとき { lost }。次の1行を書くときに記録へ残す
 
 const pad = (n, len = 2) => String(n).padStart(len, '0');
+
+// 行の区切りとして扱われることのある文字: U+0080〜U+009F（U+0085 を含む制御文字）と、U+2028・U+2029（行区切り・段落区切り）。
+// JSON.stringify はこれらをそのまま出す。これらでも行を分ける読み手（Node の readline など）で読むと、1件の記録が途中で
+// 2つに割れて、どちらも読めなくなる（URL にこの文字を1つ混ぜるだけで、その閲覧の記録を操作ログの画面から消せた）。
+// 書くときは必ず「バックスラッシュ + u + 4桁」の形にする（JSON として読めば元の文字に戻る）。
+const LINE_BREAKERS = new RegExp('[' + String.fromCharCode(0x80) + '-' + String.fromCharCode(0x9f) + String.fromCharCode(0x2028) + String.fromCharCode(0x2029) + ']', 'g');
+const toLine = obj => JSON.stringify(obj).replace(LINE_BREAKERS, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) + '\n';
+
+// 記録の行は、必ずこの形で始まる（{"t":"YYYY-MM-DDT…）。違う行は、途中で切れたか、書き換えられたもの
+const LINE_HEAD = /^\{"t":"\d{4}-\d{2}-\d{2}T/;
+
+// ファイルを1行ずつ読む。行の区切りは改行（LF）だけ
+// （readline は U+2028・U+2029 でも行を分けるので使わない。以前に書かれた、その文字がそのまま入っている行も読めるようにする）
+async function* linesOf(file) {
+  let rest = '';
+  for await (const chunk of fs.createReadStream(file, { encoding: 'utf8' })) {
+    const text = rest + chunk;
+    let start = 0;
+    for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', start)) {
+      yield text.slice(start, at);
+      start = at + 1;
+    }
+    rest = text.slice(start);
+  }
+  if (rest) yield rest;
+}
 
 // サーバーの現地時刻を、時差つきの ISO 形式にする（例 2026-11-21T10:23:45.123+09:00）
 function localIso(d) {
@@ -72,22 +100,37 @@ function openFor(d) {
     // ときどき確かめて、無くなっていたら作り直す
     if (now - lastCheckedAt < checkIntervalMs) return;
     lastCheckedAt = now;
-    if (fs.existsSync(path.join(dir, name))) return;
+    if (fs.existsSync(path.join(dir, name))) { writtenSinceCheck = 0; return; }
   }
   closeFile();
   const file = path.join(dir, name);
+  let size = -1;
+  try { size = fs.statSync(file).size; } catch (_) { /* まだ無いファイルは、これから作られる */ }
+  // いちど開いた月のファイルが無くなっていたら、消された（または名前を変えられた・フォルダごと移された）ということ。
+  // 作り直して続けるが、「無くなっていた」ことを新しいファイルの先頭に残す（黙って作り直すと、消されたことが分からない）。
+  // lost は、最後に「在る」と確かめたあとに書いた件数（無くなったファイルへ書いた分を含む）
+  if (size < 0 && knownFile === name && !removedSince) removedSince = { lost: writtenSinceCheck };
+  writtenSinceCheck = 0;
   let needsNewline = false;
-  try {
-    const size = fs.statSync(file).size;
-    if (size > 0) {
+  if (size > 0) {
+    try {
       const last = Buffer.alloc(1);
       const rfd = fs.openSync(file, 'r');
       try { fs.readSync(rfd, last, 0, 1, size - 1); } finally { fs.closeSync(rfd); }
       needsNewline = last[0] !== 0x0a;
-    }
-  } catch (_) { /* まだ無いファイルは、これから作られる */ }
-  fd = fs.openSync(file, 'a');
+    } catch (_) { /* 読めなければ、そのまま続きに書く */ }
+  }
+  try {
+    fd = fs.openSync(file, 'a');
+  } catch (err) {
+    // 動いている間に保存先のフォルダごと消された・移された場合は、作り直して続ける
+    // （作り直さないと、だれかがフォルダを戻すまで、表示も保存も記録されないまま処理され続ける）
+    if (err.code !== 'ENOENT') throw err;
+    fs.mkdirSync(dir, { recursive: true });
+    fd = fs.openSync(file, 'a');
+  }
   fdName = name;
+  knownFile = name;
   lastCheckedAt = now;
   // 最後の行が途中で切れていたら（停電の瞬間など）、改行を足してから続きを書く（次の記録が、切れた行とつながって読めなくなるのを防ぐ）
   if (needsNewline) fs.writeSync(fd, '\n');
@@ -119,6 +162,9 @@ function noteFailure(err) {
  */
 function init(dbPath) {
   dir = resolveDir(dbPath);
+  knownFile = '';
+  writtenSinceCheck = 0;
+  removedSince = null;
   try {
     fs.mkdirSync(dir, { recursive: true });
     openFor(new Date());
@@ -137,13 +183,19 @@ function init(dbPath) {
 function write(entry, d = new Date()) {
   if (!dir) return false;
   try {
-    let line = JSON.stringify({ t: localIso(d), ...entry }) + '\n';
+    let line = toLine({ t: localIso(d), ...entry });
     openFor(d);
     if (unreportedFailures) {
       // 書けない状態から戻った最初の1行の前に、「この間の記録が残っていない」ことを書いておく
-      line = JSON.stringify({ t: localIso(d), user: null, action: 'audit.gap', detail: { count: unreportedFailures, note: '保存先に書き込めず、記録できなかった件数', last_error: lastError && lastError.message } }) + '\n' + line;
+      line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { count: unreportedFailures, note: '保存先に書き込めず、記録できなかった件数', last_error: lastError && lastError.message } }) + line;
+    }
+    if (removedSince) {
+      // 今月のファイルが無くなっていた（消された・名前を変えられた・フォルダごと移された）ので作り直した、という記録を先頭に置く
+      line = toLine({ t: localIso(d), user: null, action: 'audit.gap', detail: { removed: true, count: removedSince.lost, note: '今月の操作ログのファイルが無くなっていたので、作り直した（消されたか、名前を変えられた）。これより前の今月の記録は、このファイルに残っていない（バックアップを確認する）。無くなる直前に書いた件数' } }) + line;
     }
     fs.writeSync(fd, line);
+    writtenSinceCheck++;
+    removedSince = null;
     unreportedFailures = 0;
     scheduleSync();
     return true;
@@ -359,26 +411,31 @@ function monthsBetween(from, to) {
 /**
  * 期間内の記録を、新しい順に最大 limit 件返す。
  * @param {{ from: string, to: string, user?: string, kind?: string, q?: string, limit: number }} cond  from / to は 'YYYY-MM-DD'（両端を含む）
- * @returns {Promise<{ rows: object[], total: number, truncated: boolean }>} total = 条件に合った件数
+ * @returns {Promise<{ rows: object[], total: number, truncated: boolean, unreadable: number }>}
+ *   total = 条件に合った件数 / unreadable = 読めなかった行の数（途中で切れた行・書き換えられた行。絞り込みの条件には関係なく数える）
  */
 async function read({ from, to, user, kind, q, limit, patientIds, patientId }) {   // patientId: その患者IDの記録だけ（数値）
-  if (!dir) return { rows: [], total: 0, truncated: false };
+  if (!dir) return { rows: [], total: 0, truncated: false, unreadable: 0 };
   const needle = q ? String(q).toLowerCase() : '';
   const ring = new Array(limit);   // 条件に合ったもののうち、新しい limit 件だけを覚えておく
   let total = 0;
+  let unreadable = 0;
 
   for (const month of monthsBetween(from, to)) {
     const file = path.join(dir, `audit-${month}.jsonl`);
     if (!fs.existsSync(file)) continue;
-    const lines = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
-    for await (const line of lines) {
-      const day = line.slice(6, 16);   // 行頭は必ず {"t":"YYYY-MM-DD…
+    for await (const line of linesOf(file)) {
+      if (!line.trim()) continue;
+      // 読めない行は、黙って飛ばさずに数える（画面に「読めない行がある」と出す）。
+      // 行頭が決まった形でない行は日付も分からないので、期間に関係なく数える
+      if (!LINE_HEAD.test(line)) { unreadable++; continue; }
+      const day = line.slice(6, 16);   // 行頭は {"t":"YYYY-MM-DD…
       if (day < from || day > to) continue;
+      let row;
+      try { row = JSON.parse(line); } catch (_) { unreadable++; continue; }   // 途中で切れた行（停電の瞬間など）
+      if (!row || typeof row !== 'object') { unreadable++; continue; }
       const textHit = !needle || line.toLowerCase().includes(needle);
       if (!textHit && !(patientIds && patientIds.size)) continue;
-      let row;
-      try { row = JSON.parse(line); } catch (_) { continue; }   // 途中で切れた行（停電の瞬間など）は飛ばす
-      if (!row || typeof row !== 'object') continue;
       if (needle) {
         // キーワードは、行の文字のほかに「患者の氏名」でも探す（行には患者IDしか入っていないため）。
         // 操作ログを表示した記録そのもの（検索に使った言葉が入っている）は、キーワードでは拾わない
@@ -400,7 +457,7 @@ async function read({ from, to, user, kind, q, limit, patientIds, patientId }) {
   const count = Math.min(total, limit);
   const rows = [];
   for (let i = 1; i <= count; i++) rows.push(ring[(total - i) % limit]);   // 新しい順
-  return { rows, total, truncated: total > limit };
+  return { rows, total, truncated: total > limit, unreadable };
 }
 
 // 書き込みの状態（操作ログの画面に「記録できていない」ことを出すため）

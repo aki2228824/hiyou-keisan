@@ -907,7 +907,7 @@ async function unlockUser(id) {
 // サーバーが記録する出来事の種類（server/middleware/audit.js、server/routes/auth.js）と、画面での呼び名
 const AUDIT_ACTIONS = {
   'login.success': 'ログイン', 'login.failure': 'ログイン失敗', 'login.locked': 'ログイン拒否（ロック中）',
-  'audit.skipped': '多すぎた要求（件数だけを記録）', 'audit.gap': '記録の欠落（保存先に書き込めなかった）',
+  'audit.skipped': '多すぎた要求（件数だけを記録）', 'audit.gap': '記録の欠落',
   'users.password_reset_offline': 'パスワードの再設定（サーバー上のツール）', 'logout': 'ログアウト',
   'records.view': '実績の表示', 'records.save': '実績の保存', 'summary.view': '月次集計の表示',
   'mealprices.view': '食事単価の表示', 'mealprices.list': '食事単価の一覧表示', 'mealprices.save': '食事単価の保存',
@@ -981,6 +981,11 @@ function auditDetail(row) {
     parts.push(`${rest.note ?? '多すぎた要求の件数'}：${rest.count}件${kinds ? `（${kinds}）` : ''}`);
     delete rest.count; delete rest.note; delete rest.actions; delete rest.refused;
   }
+  // 記録の欠落: 保存先に書き込めなかった件数、または「今月のファイルが無くなっていたので作り直した」こと
+  if (row.action === 'audit.gap') {
+    parts.push(`${rest.note ?? '記録できなかった件数'}：${rest.count ?? '?'}件${rest.last_error ? `（${rest.last_error}）` : ''}`);
+    delete rest.count; delete rest.note; delete rest.last_error; delete rest.removed;
+  }
   if (Object.keys(rest).length) parts.push(JSON.stringify(rest));
   return parts.join(' ／ ');
 }
@@ -1043,6 +1048,9 @@ async function loadAuditLog() {
     ${failed ? `<div class="audit-warning">サーバーの起動後、操作ログに書き込めなかった記録が ${esc(data.writer.failedCount)} 件あります
       （最後のエラー: ${esc(data.writer.lastError?.at)} ${esc(data.writer.lastError?.message)}）。
       サーバーのディスクの空き容量と、保存先フォルダ（${esc(data.writer.dir)}）の権限を確認してください。</div>` : ''}
+    ${data.unreadable > 0 ? `<div class="audit-warning">この期間の操作ログのファイルに、読めない行が ${esc(Number(data.unreadable).toLocaleString())} 行あります
+      （下の一覧にも件数にも入っていません）。停電などで途中で切れた行か、ファイルが書き換えられた可能性があります。
+      保存先フォルダ（${esc(data.writer?.dir ?? '')}）のファイルを、バックアップと見比べて確認してください。</div>` : ''}
     <p class="audit-count">${esc(data.from)} 〜 ${esc(data.to)}：${esc(data.total.toLocaleString())} 件${
       data.truncated ? `（新しい ${esc(data.rows.length.toLocaleString())} 件を表示しています。期間や条件を絞ると、残りを確認できます）` : ''}</p>`;
 
@@ -1093,7 +1101,8 @@ async function downloadAuditCsv() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast(`${data.rows.length.toLocaleString()} 件を CSV に保存しました` + (data.truncated ? '（条件に合う記録の一部です）' : ''));
+  showToast(`${data.rows.length.toLocaleString()} 件を CSV に保存しました` + (data.truncated ? '（条件に合う記録の一部です）' : '') +
+    (data.unreadable > 0 ? `（このほかに、読めない行が ${Number(data.unreadable).toLocaleString()} 行あります）` : ''));
 }
 
 // ============================================================

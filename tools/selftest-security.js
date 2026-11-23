@@ -183,7 +183,25 @@ function check(name, cond, detail) {
   audit._test.close();
   fs.rmSync(file, { force: true });
   const wroteAfterDelete = audit.recordSystem('server.start', { step: '消した後' });
-  check('34. ログのファイルを消されても、作り直して書き続ける', wroteAfterDelete && fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('消した後'));
+  const recreated = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : [];
+  check('34. ログのファイルを消されても、作り直して書き続ける。作り直したファイルの先頭に「無くなっていた」ことが残る（黙って作り直さない）',
+    wroteAfterDelete && recreated.length === 2 && recreated[0].action === 'audit.gap' && recreated[0].detail.removed === true && recreated[0].detail.count === 1 &&
+    recreated[1].detail.step === '消した後' && audit.kindsOf(recreated[0]).includes('system') && audit.kindsOf(recreated[0]).includes('denied'),
+    JSON.stringify(recreated[0] && recreated[0].detail).slice(0, 80));
+  // 保存先のフォルダごと消されても、作り直して書き続ける（作り直さないと、だれかがフォルダを戻すまで、表示も保存も記録されないまま処理され続ける）
+  audit._test.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+  const wroteAfterDirDelete = audit.recordSystem('server.start', { step: 'フォルダごと消した後' });
+  const afterDirDelete = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : [];
+  check('34b. 保存先のフォルダごと消されても、作り直して書き続ける。「無くなっていた」ことも残る',
+    wroteAfterDirDelete === true && afterDirDelete.length === 2 && afterDirDelete[0].action === 'audit.gap' && afterDirDelete[0].detail.removed === true &&
+    afterDirDelete[1].detail.step === 'フォルダごと消した後' && audit.status().failedCount === 0);
+  // 月が替わって新しいファイルができるのは、ふつうのこと（「無くなっていた」とは書かない）
+  const monthAfter = new Date(new Date().getFullYear(), new Date().getMonth() + 2, 1, 0, 0, 5);
+  audit.write({ user: null, action: 'server.start' }, monthAfter);
+  const monthAfterFile = path.join(dir, `audit-${monthAfter.getFullYear()}-${String(monthAfter.getMonth() + 1).padStart(2, '0')}.jsonl`);
+  check('34c. 月が替わって新しいファイルができたときは、「無くなっていた」とは書かない',
+    fs.readFileSync(monthAfterFile, 'utf8').trim().split('\n').length === 1 && !fs.readFileSync(monthAfterFile, 'utf8').includes('audit.gap'));
 
   // 保存先が使えなくなっても例外にならず、失敗した件数が分かる。直ったら書き込みを再開する
   audit._test.close();
@@ -382,6 +400,32 @@ function check(name, cond, detail) {
   r2 = await audit.read({ from: today, to: today, limit: 500, patientId: 4242 });
   check('56b. キーワードが接続元などに当たった「操作ログの表示」の記録は拾う。患者IDで絞り込むと、その患者の記録だけになる',
     viewsFound >= 1 && r2.rows.length >= 1 && r2.rows.every(x => x.patient_id === 4242), `表示の記録 ${viewsFound} 件 / 患者ID 4242 の記録 ${r2.rows.length} 件`);
+
+  // 行区切りとして扱われることのある文字（U+2028・U+2029・U+0085）を値に混ぜても、記録は1行のままで、読み出しでも見える。
+  // （URL にこの文字を1つ混ぜるだけで、その閲覧の記録が操作ログの画面に出なくなっていた。ファイルには書かれていたが、
+  //   読み出しがこの文字でも行を分けていたため、2つに割れた行がどちらも読めずに飛ばされていた）
+  const SEP = 'a\u2028b\u2029c\u0085d';
+  const newlinesBefore = fs.readFileSync(file2).filter(b => b === 0x0a).length;
+  audit.record(req({ method: 'GET', originalUrl: '/api/records?patient_id=4343' }), 'records.view', { status: 200, patient_id: 4343, detail: { year: '2026', z: SEP } });
+  const rawAfter = fs.readFileSync(file2, 'utf8');
+  r2 = await audit.read({ from: today, to: today, limit: 500, patientId: 4343 });
+  check('61. 行区切りの文字（U+2028・U+2029・U+0085）を含む記録も、1行として書かれ、読み出しでも見える（その文字で閲覧の記録を隠せない）',
+    fs.readFileSync(file2).filter(b => b === 0x0a).length === newlinesBefore + 1 && !/[\u0085\u2028\u2029]/.test(rawAfter) &&
+    r2.rows.length === 1 && r2.rows[0].action === 'records.view' && r2.rows[0].detail.z === SEP,
+    `患者ID 4343 の記録 ${r2.rows.length} 件`);
+  // 修正の前に書かれた行（その文字がそのまま入っている）も読める
+  audit._test.close();
+  fs.appendFileSync(file2, JSON.stringify({ t: today + 'T12:00:00.000+09:00', user: 'mukashi', action: 'records.view', status: 200, patient_id: 4344, detail: { z: 'x\u2028y' } }) + '\n');
+  r2 = await audit.read({ from: today, to: today, limit: 500, patientId: 4344 });
+  check('62. 以前に書かれた、行区切りの文字がそのまま入っている行も読める', r2.rows.length === 1 && r2.rows[0].user === 'mukashi' && r2.rows[0].detail.z === 'x\u2028y');
+  // 読めない行は、黙って飛ばさずに行数を返す（画面に「読めない行がある」と出すため）
+  const unreadableBefore = (await audit.read({ from: today, to: today, limit: 500 })).unreadable;
+  fs.appendFileSync(file2, '{"t":"' + today + 'T12:00:01.000+09:00","user":"kowareta","action":"records.view","patient_id":4345\n' + 'でたらめな行\n');
+  r2 = await audit.read({ from: today, to: today, limit: 500 });
+  const byFilter = await audit.read({ from: today, to: today, limit: 500, user: 'だれでもない', kind: 'auth' });
+  check('63. 読めない行（途中で切れた行・書き換えられた行）があるときは、その行数が分かる。絞り込んでいても同じ数が返る',
+    Number.isInteger(unreadableBefore) && r2.unreadable === unreadableBefore + 2 && byFilter.unreadable === r2.unreadable && byFilter.rows.length === 0,
+    `読めない行 ${unreadableBefore} → ${r2.unreadable}`);
   audit._test.close();
 
   // ---------------------------------------------------------------- 非常用のパスワード再設定ツール（入力の部分）

@@ -376,6 +376,13 @@ function runResetTool(args, env, input = '') {
     check('%00 を含むURL・指定の欠けた食事単価の要求・状態にオブジェクトを指定した更新は 400（データを返さず、500 にもならない）',
       nulUrl.status === 400 && noPatient.status === 400 && oddActive.status === 400, [nulUrl.status, noPatient.status, oddActive.status].join(','));
     const headView = await viewer('HEAD', `/api/records?${pidQuery}`);
+    // URL に行区切りの文字（U+2028・U+2029）を混ぜた表示。以前は、ファイルには書かれるのに操作ログの画面では読めず、
+    // 閲覧のみのユーザーでも、自分が患者の記録を見たことを一覧から消せた
+    const LS = String.fromCharCode(0x2028), PS = String.fromCharCode(0x2029);
+    const sepViews = [
+      await viewer('GET', `/api/records?${pidQuery}&z=${encodeURIComponent(LS)}`),
+      await viewer('GET', `/api/records/summary?${pidQuery}&z=${encodeURIComponent('x' + LS + 'y' + PS)}`),
+    ];
 
     // 無効にしたユーザーは、ログイン中の画面も新しいログインも使えなくなる。成功するログインを続けても、失敗の回数にはならない
     check('確認用のユーザー作成', (await mk('smoke_off', 'viewer')) === 200);
@@ -446,6 +453,12 @@ function runResetTool(args, env, input = '') {
       has('mealprices.view', r => r.status === 400 && r.patient_id === patients[0].id) &&
       headView.status === 200 && has('records.view', r => r.method === 'HEAD' && r.status === 200 && r.patient_id === patients[0].id) &&
       deleted.status === 200 && has('patients.delete', r => r.status === 200 && r.patient_id === doomed.id && r.detail && r.detail.name === 'スモーク削除確認'));
+    check('操作ログ：URL に行区切りの文字（U+2028・U+2029）を混ぜた表示も、操作ログの画面に出る（その文字で自分の閲覧を隠せない）。読めない行は無い',
+      sepViews.every(r => r.status === 200) &&
+      has('records.view', r => r.user === 'smoke_viewer' && r.patient_id === patients[0].id && r.detail && r.detail.z === LS) &&
+      has('summary.view', r => r.user === 'smoke_viewer' && r.patient_id === patients[0].id && r.detail && r.detail.z === 'x' + LS + 'y' + PS) &&
+      audit.unreadable === 0 && !readAudit().includes(LS) && !readAudit().includes(PS),
+      `状態 ${sepViews.map(r => r.status).join(',')} / 読めない行 ${audit.unreadable}`);
     check('操作ログ：患者IDでの絞り込み、期間・件数の上限', await (async () => {
       const byPatient = await (await admin('GET', `/api/audit?limit=5000&patient_id=${doomed.id}`)).json();
       const none = await (await admin('GET', '/api/audit?from=2020-01-01&to=2020-01-02')).json();
