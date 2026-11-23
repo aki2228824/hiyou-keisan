@@ -228,7 +228,7 @@ const fresh = () => { for (const f of fs.readdirSync(workDir)) fs.rmSync(path.jo
   if (process.platform === 'win32') {
     // 共有フォルダ越し（\\サーバー\共有\… の形）の DB は開かない。同じファイルでも機械や書き方によって別の扱いになり、二重に開くことを防げないため
     const codes = [];
-    for (const p of ['\\\\localhost\\share\\data\\hiyou.db', '\\\\?\\UNC\\nas01\\share\\hiyou.db', '//nas01/share/hiyou.db']) {
+    for (const p of ['\\\\localhost\\share\\data\\hiyou.db', '\\\\?\\UNC\\nas01\\share\\hiyou.db', '\\\\.\\UNC\\nas01\\share\\hiyou.db', '//nas01/share/hiyou.db']) {
       try { await guard.acquire(p, 'tool'); codes.push('開いた'); } catch (e) { codes.push(e.code); }
     }
     check('18. DB の場所がネットワーク上（\\\\サーバー\\共有\\… の形）のときは、開かない', codes.every(x => x === 'DB_ON_NETWORK') &&

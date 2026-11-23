@@ -74,19 +74,32 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   if (rows.some(r => r.quantity === null))
     return res.status(400).json({ error: `${record_date} の数量は、0〜9999 の整数で入力してください（小数は使えません）` });
 
-  let mealRow = null;
+  // 食事・サービスの欄（1日分が1行）は、送られてきた項目だけを変える。送られてこなかった項目は、いまの値のまま残す。
+  // 以前は、1つでも変えると6項目をまとめて上書きしていた。そのため、
+  //  ・同じ日を2人が開いていて、片方が朝食を、もう片方が昼食を入れると、あとから保存した人の画面の値になり、先に入れた分が消えた
+  //  ・項目の無い meal（{}）が届くと、その日の食事・サービスがすべて 0 と空欄で上書きされた
+  const MEAL_FIELDS = ['breakfast', 'lunch', 'dinner', 'service_status', 'hospital_addition', 'hospital_special'];
+  const mealGiven = {};
   if (meal) {
-    const status = meal.service_status ?? '';
-    if (typeof status !== 'string' && typeof status !== 'number')
-      return res.status(400).json({ error: 'meal の内容が正しくありません' });
-    mealRow = [
-      toCount(meal.breakfast), toCount(meal.lunch), toCount(meal.dinner),
-      String(status),
-      toCount(meal.hospital_addition), toCount(meal.hospital_special),
-    ];
-    if (mealRow.some(v => v === null))
-      return res.status(400).json({ error: `${record_date} の食事回数・加算は、0〜9999 の整数で入力してください（小数は使えません）` });
+    for (const field of MEAL_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(meal, field) || meal[field] === undefined) continue;
+      if (field === 'service_status') {
+        const status = meal.service_status ?? '';
+        if (typeof status !== 'string' && typeof status !== 'number')
+          return res.status(400).json({ error: 'meal の内容が正しくありません' });
+        mealGiven[field] = String(status);
+      } else {
+        const count = toCount(meal[field]);
+        if (count === null)
+          return res.status(400).json({ error: `${record_date} の食事回数・加算は、0〜9999 の整数で入力してください（小数は使えません）` });
+        mealGiven[field] = count;
+      }
+    }
   }
+  // 年の打ち間違い（月の欄に年を打っている途中の 0002 年など）で、ありえない年の実績が入らないようにする
+  const recordYear = Number(record_date.slice(0, 4));
+  if (recordYear < 2000 || recordYear > 2100)
+    return res.status(400).json({ error: `日付の年が正しくありません（${record_date}）` });
 
   // 存在しない患者・物品への登録を防ぐ（sql.js では外部キー制約が効かないため）
   if (!db.query('SELECT id FROM patients WHERE id=?', [pid])[0])
@@ -110,7 +123,15 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
       }
     }
 
-    if (mealRow) {
+    if (Object.keys(mealGiven).length) {
+      // いまの値に、送られてきた項目だけを重ねる
+      const current = db.query(
+        'SELECT breakfast, lunch, dinner, service_status, hospital_addition, hospital_special FROM meal_records WHERE patient_id=? AND record_date=?',
+        [pid, record_date])[0] || {};
+      const mealRow = MEAL_FIELDS.map(field => {
+        if (field in mealGiven) return mealGiven[field];
+        return field === 'service_status' ? String(current.service_status ?? '') : (Number(current[field]) || 0);
+      });
       db.run(`
         INSERT INTO meal_records
           (patient_id, record_date, breakfast, lunch, dinner,

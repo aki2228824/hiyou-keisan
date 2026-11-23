@@ -108,7 +108,13 @@ function closeFile() {
 // 'same' = そのまま / 'missing' = 無くなった / 'replaced' = 同じ名前の別のファイルに置き換えられた / 'shrunk' = 短くなった（中身を消された）
 function checkOpenFile(file) {
   let onDisk, mine;
-  try { onDisk = fs.statSync(file, { bigint: true }); } catch (_) { return 'missing'; }
+  try {
+    onDisk = fs.statSync(file, { bigint: true });
+  } catch (err) {
+    // 「無い」と分かったときだけ、無くなったものとして扱う。それ以外の理由（ほかのプログラムが一時的に掴んでいる、など）で
+    // 確かめられなかったときは、変わっていないものとして次の確認に回す（「無くなっていた」と誤って記録しないため）
+    return err && (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? 'missing' : 'same';
+  }
   try { mine = fs.fstatSync(fd, { bigint: true }); } catch (_) { return 'missing'; }
   // ファイルの番号（NTFS のファイル ID、Linux の i ノード番号）が違えば、別のファイル。番号を返さない保存先（0 になる）では比べない
   if (onDisk.ino !== 0n && mine.ino !== 0n && (onDisk.ino !== mine.ino || onDisk.dev !== mine.dev)) return 'replaced';
@@ -132,12 +138,12 @@ function openFor(d) {
   }
   closeFile();
   const file = path.join(dir, name);
-  let size = -1;
-  try { size = fs.statSync(file).size; } catch (_) { /* まだ無いファイルは、これから作られる */ }
+  let size = -1;   // -1 = 無い（これから作られる） / -2 = 在るかどうかを確かめられなかった
+  try { size = fs.statSync(file).size; } catch (err) { if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) size = -2; }
   // いちど開いた月のファイルが無くなっていたら、消された（または名前を変えられた・フォルダごと移された）ということ。
   // 作り直して続けるが、「無くなっていた」ことを新しいファイルの先頭に残す（黙って作り直すと、消されたことが分からない）。
   // lost は、最後に「在る」と確かめたあとに書いた件数（無くなったファイルへ書いた分を含む）
-  if (size < 0 && knownFile === name && !removedSince) removedSince = { lost: writtenSinceCheck, how: 'missing' };
+  if (size === -1 && knownFile === name && !removedSince) removedSince = { lost: writtenSinceCheck, how: 'missing' };
   writtenSinceCheck = 0;
   let needsNewline = false;
   if (size > 0) {

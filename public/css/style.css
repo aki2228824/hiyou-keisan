@@ -374,6 +374,12 @@ select, input[type="date"], input[type="month"], input[type="text"], input[type=
   outline: 1px solid #D97730;
   border-radius: 2px;
 }
+/* まだ保存していない入力（変更した欄）。保存されると色が消える */
+.cell-input[data-dirty],
+.meal-price-bar input[data-dirty] { background: #FFE9A8; }
+/* 数字として読めない入力（「5-」、マイナス、小数など）。このままでは保存できない */
+.cell-input[type="number"]:invalid,
+.meal-price-bar input[type="number"]:invalid { background: #FFC9C9; outline: 1px solid #D0342C; }
 
 /* 日次入力フォーム（旧・不使用） */
 .input-card {

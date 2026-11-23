@@ -34,7 +34,7 @@ function realPathOf(dbPath) {
 // （例: \\localhost\C$\hiyou\data\hiyou.db と C:\hiyou\data\hiyou.db。ほかの PC からは、名前付きパイプそのものが届かない）
 function isNetworkPath(real) {
   if (process.platform !== 'win32') return false;
-  if (/^\\\\\?\\UNC\\/i.test(real)) return true;      // \\?\UNC\サーバー\共有\…
+  if (/^\\\\[?.]\\UNC\\/i.test(real)) return true;    // \\?\UNC\サーバー\共有\… と \\.\UNC\サーバー\共有\…
   return /^\\\\[^?.\\]/.test(real);                   // \\サーバー\共有\…（\\?\C:\… と \\.\… は、この機械の中の場所）
 }
 

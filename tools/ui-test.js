@@ -193,12 +193,95 @@ async function waitFor(test, ms = 6000) {
     check('日次入力：食事単価を保存しないまま患者を切り替えようとすると、確認が出る（取りやめれば、入力はそのまま残る）',
       dialogs.some(m => /保存していない入力/.test(m)) && s.title.includes('BBB') && s.mpLunch === '100', `確認 ${dialogs.length} 回`);
 
-    // 表に入力して保存した内容は、表に出ている患者に保存される
+    // 表に入力して保存した内容は、表に出ている患者に保存される。
+    // 「選択中の患者」を表す変数が、表と食い違った状態をわざと作ってから保存する（保存先は、表を描いたときに控えた患者でなければならない）
+    await page.evaluate(id => { selectedPatientId = id; }, A);
     await page.type(cell('2026-11-05', item0.id), '2');
     await page.click(SAVE_ALL);
     const saved = await waitFor(async () => (await recordsOf(B)).some(r => r.record_date === '2026-11-05' && Number(r.quantity) === 2));
-    check('日次入力：表に入力して保存した内容は、表に出ている患者に保存される',
+    await page.evaluate(id => { selectedPatientId = id; }, B);
+    check('日次入力：表に入力して保存した内容は、表に出ている患者に保存される（選択中の患者を表す変数が食い違っていても）',
       saved && !(await recordsOf(A)).some(r => r.record_date === '2026-11-05') && Number((await mealPrice(B)).lunch_price) === 100);
+
+    const mealsOf = async id => (await api.json('GET', `/api/records?patient_id=${id}&year=${YEAR}&month=${MONTH}`)).meals;
+    const mealCell = (date, field) => `#monthly-tbl [data-date="${date}"][data-meal="${field}"]`;
+
+    // 一括保存の実行中に、別の患者をクリックする（保存は1日分ずつ送るので、日数が多いと数秒かかる）。
+    // 以前は切り替わってしまい、残りの日の食事の欄を、切り替えたあとの表から読んで、元の患者の行を上書きした
+    await page.setRequestInterception(true);
+    const slowSave = req => {
+      if (req.method() === 'POST' && req.url().endsWith('/api/records')) setTimeout(() => req.continue().catch(() => {}), 700);
+      else req.continue().catch(() => {});
+    };
+    page.on('request', slowSave);
+    for (const day of ['10', '11', '12']) await page.type(mealCell(`2026-11-${day}`, 'dinner'), '1');
+    await page.click(SAVE_ALL);
+    await sleep(250);
+    await page.click(patientBtn(A));
+    await sleep(300);
+    const during = await state();
+    await waitFor(() => page.evaluate(() => !savingRecords), 10000);
+    page.off('request', slowSave);
+    await page.setRequestInterception(false);
+    const bMeals = await mealsOf(B), aMeals = await mealsOf(A);
+    const dinners = ['10', '11', '12'].map(day => bMeals.find(x => x.record_date === `2026-11-${day}`) || {});
+    check('日次入力：一括保存の実行中は、患者を切り替えられない。保存中の患者の食事の行が、別の患者の値や 0 で上書きされない',
+      during.title.includes('BBB') && dinners.every(m => Number(m.dinner) === 1 && Number(m.breakfast) === 0) &&
+      aMeals.length === 1 && aMeals[0].record_date === '2026-11-03' && Number(aMeals[0].breakfast) === 1,
+      `保存中の画面「${during.title}」 / BBB の夕食 ${dinners.map(m => m.dinner).join(',')} / AAA の食事の行 ${aMeals.length}`);
+
+    // ほかの人が、同じ患者・同じ日の別の欄と、別の食事単価を先に保存していた場合（この画面の表は、その前に開いたまま）
+    await api('POST', '/api/records', { patient_id: B, record_date: '2026-11-20', items: [], meal: { breakfast: 1 } });
+    await api('POST', '/api/meal-prices', { patient_id: B, year: YEAR, month: MONTH, dinner_price: 777 });
+    await page.type(mealCell('2026-11-20', 'lunch'), '1');
+    await typeInto('#mp-cap', '5000');
+    await page.click(SAVE_ALL);
+    await waitFor(async () => { const m = (await mealsOf(B)).find(x => x.record_date === '2026-11-20'); return m && Number(m.lunch) === 1; });
+    const day20 = (await mealsOf(B)).find(x => x.record_date === '2026-11-20') || {};
+    const pricesB = await mealPrice(B);
+    check('日次入力：開いたままの表から保存しても、ほかの人が同じ日に入れた別の欄や、別の食事単価は消えない',
+      Number(day20.breakfast) === 1 && Number(day20.lunch) === 1 &&
+      Number(pricesB.dinner_price) === 777 && Number(pricesB.meal_cap) === 5000 && Number(pricesB.breakfast_price) === 250 && Number(pricesB.lunch_price) === 100,
+      `20日 朝食 ${day20.breakfast}・昼食 ${day20.lunch} / 単価 朝 ${pricesB.breakfast_price}・昼 ${pricesB.lunch_price}・夕 ${pricesB.dinner_price}・上限 ${pricesB.meal_cap}`);
+
+    // 数字として読めない入力（「5-」）は、0 として保存しない（ブラウザーは、読めない入力を空として扱う）
+    const typo = cell('2026-11-05', item0.id);   // 上で 2 を保存した欄
+    await page.click(typo, { clickCount: 3 });
+    await page.keyboard.type('5-');
+    dialogs.length = 0;
+    await page.click(SAVE_ALL);
+    await sleep(700);
+    const afterTypo = (await recordsOf(B)).find(r => r.record_date === '2026-11-05' && r.item_id === item0.id);
+    check('日次入力：数字として読めない入力（「5-」など）は保存せずに知らせる（0 として保存して、実績を消さない）',
+      dialogs.some(m => /数字として読めません/.test(m)) && afterTypo && Number(afterTypo.quantity) === 2, `知らせ ${dialogs.length} 回 / DB の数量 ${afterTypo && afterTypo.quantity}`);
+    await page.$eval(typo, el => { el.value = '2'; delete el.dataset.dirty; });
+
+    // 月の欄に年を打っている途中（0002 年など）では、表を切り替えない。そういう年の実績は保存できない
+    const titleBefore = (await state()).title;
+    await page.evaluate(() => { const el = document.getElementById('sel-month'); el.value = '0002-11'; el.dispatchEvent(new Event('change')); });
+    await sleep(500);
+    s = await state();
+    const oddYear = await api('POST', '/api/records', { patient_id: B, record_date: '0002-11-01', items: [{ item_id: item0.id, quantity: 1 }] });
+    await page.$eval('#sel-month', (el, ym) => { el.value = ym; }, YM);
+    check('日次入力：月の欄が、年を打っている途中の値（0002 年など）のときは、表を切り替えない。その年の実績は保存できない',
+      s.hasTable && s.title === titleBefore && oddYear.status === 400, `見出し「${s.title}」 / 保存 ${oddYear.status}`);
+
+    // 病棟の切り替えで患者の一覧を読み込めなかったとき、前の病棟の患者が残らない
+    await page.setRequestInterception(true);
+    const failPatients = req => {
+      if (req.url().includes(`/api/patients?ward_id=${wards[1].id}`)) req.abort().catch(() => {});
+      else req.continue().catch(() => {});
+    };
+    page.on('request', failPatients);
+    await page.click(`.ward-btn[onclick="selectWard(${wards[1].id})"]`);
+    await sleep(700);
+    const wardFail = await page.evaluate(() => ({ buttons: document.querySelectorAll('.patient-btn').length, text: document.getElementById('patient-list').textContent.trim() }));
+    page.off('request', failPatients);
+    await page.setRequestInterception(false);
+    check('日次入力：病棟の切り替えで患者の一覧を読み込めなかったとき、前の病棟の患者の一覧は残らない',
+      wardFail.buttons === 0 && /読み込めませんでした/.test(wardFail.text), wardFail.text.slice(0, 40));
+    await page.click(`.ward-btn[onclick="selectWard(${wards[0].id})"]`);
+    await page.waitForSelector(patientBtn(B));
 
     // 無効にした物品（月の途中で取り扱いをやめた、など）に実績があるとき: 入力画面・月次集計・請求書 PDF の金額が同じ
     await api('PUT', `/api/items/${item2.id}`, { name: item2.name, sort_order: item2.sort_order, active: 0 });
@@ -270,6 +353,16 @@ async function waitFor(test, ms = 6000) {
     const whole = [await post('/api/records', rec('3')), await post('/api/records', rec(4))];
     check('数量・回数・単価は、整数だけを受け付ける（小数や "1e2"・"0x10" のような書き方、大きすぎる値は 400）',
       statuses.every(x => x === 400) && whole.every(x => x === 200), `断るべきもの ${statuses.join(',')} / 受け付けるべきもの ${whole.join(',')}`);
+
+    // 食事・サービスの欄は、送った項目だけが変わる。項目の無い保存では、何も消えない
+    const day21 = meal => api('POST', '/api/records', { patient_id: B, record_date: '2026-11-21', items: [], meal });
+    await day21({ breakfast: 1, lunch: 1, service_status: '外泊' });
+    await day21({});
+    await day21({ dinner: 2 });
+    const saved21 = ((await api.json('GET', `/api/records?patient_id=${B}&year=${YEAR}&month=${MONTH}`)).meals || []).find(x => x.record_date === '2026-11-21') || {};
+    check('食事・サービスの欄は、送った項目だけが変わる（項目の無い保存では、その日の食事・サービスが消えない）',
+      Number(saved21.breakfast) === 1 && Number(saved21.lunch) === 1 && Number(saved21.dinner) === 2 && saved21.service_status === '外泊',
+      `朝 ${saved21.breakfast}・昼 ${saved21.lunch}・夕 ${saved21.dinner}・状況「${saved21.service_status}」`);
 
     // ユーザーIDを変えたら、古いIDに付いていたロックは残らない
     await api('POST', '/api/users', { username: 'ui_lock', password: PASSWORD, role: 'viewer' });

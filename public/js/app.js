@@ -101,7 +101,15 @@ async function doLogout() {
   location.reload();
 }
 
+let lastLoginUser = null;   // 直前にこの画面へログインしていたユーザーID
+
 function onLoggedIn() {
+  // 別のユーザーがログインしたときは、前のユーザーが開いていた入力表（未保存の入力を含む）を残さない
+  if (lastLoginUser !== null && lastLoginUser !== currentUser.username && !savingRecords) {
+    selectedPatientId = null;
+    clearInputForm();
+  }
+  lastLoginUser = currentUser.username;
   document.getElementById('header-username').textContent = `${currentUser.username}（${roleName(currentUser.role)}）`;
   setupRoleUI();
   const defaultPage = currentUser.role === 'viewer' ? 'summary' : 'input';
@@ -173,8 +181,9 @@ window.addEventListener('unhandledrejection', e => {
     }
     return;
   }
-  // 同じエラーを続けて何度も表示しない（閉じた直後の同一メッセージは省略）
-  if (e.reason.message === lastAlert.message && Date.now() - lastAlert.closedAt < 1000) return;
+  // 同じエラーを続けて何度も表示しない（1回の操作で同時に送った要求が、同じ理由で断られたときに、同じ表示が何枚も出るのを防ぐ）。
+  // 省略するのは、閉じてから 0.3 秒以内の同じ文面だけ（1秒だった頃は、もう一度ボタンを押したときのエラーまで出なかった）
+  if (e.reason.message === lastAlert.message && Date.now() - lastAlert.closedAt < 300) return;
   alert(e.reason.message);
   lastAlert = { message: e.reason.message, closedAt: Date.now() };
 });
@@ -234,14 +243,32 @@ async function initInputPage() {
   if (selectedWardId) await loadPatients();
 }
 
+// 一括保存の実行中は、病棟・患者・月を切り替えさせない。
+// 保存は1日分ずつ順に送る。その途中で表を別の患者・別の月のものに切り替えると、残りの日の分を、切り替えたあとの表から
+// 読んでしまい、保存中の患者の食事の行が、別の患者の値や 0 で上書きされた。切り替えようとしたら、知らせて true を返す
+function busySaving() {
+  if (!savingRecords) return false;
+  showToast('保存中です。保存が終わってから切り替えてください');
+  return true;
+}
+
 async function selectWard(wardId) {
+  if (busySaving()) return;
   if (!confirmDiscardUnsaved()) return;
   selectedWardId = wardId;
   selectedPatientId = null;
   clearInputForm();
+  // 患者の一覧も先に消す（読み込みに失敗したとき、前の病棟の患者が、いまの病棟の患者に見えないように）
+  inputPatients = [];
+  document.getElementById('patient-list').innerHTML = '<p class="no-patient">読み込み中…</p>';
   document.querySelectorAll('.ward-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.ward-btn[onclick="selectWard(${wardId})"]`).classList.add('active');
-  await loadPatients();
+  try {
+    await loadPatients();
+  } catch (err) {
+    document.getElementById('patient-list').innerHTML = '<p class="no-patient">読み込めませんでした。もう一度、病棟を選んでください</p>';
+    throw err;
+  }
 }
 
 async function loadPatients() {
@@ -258,8 +285,12 @@ async function loadPatients() {
     : '<p class="no-patient">患者が登録されていません</p>';
 }
 
+let selectSeq = 0;   // 患者を選んだ回数（読み込みに失敗したとき、そのあとに選び直されていないかを見分ける）
+
 async function selectPatient(patientId) {
+  if (busySaving()) return;
   if (!confirmDiscardUnsaved()) return;
+  const mySelect = ++selectSeq;
   selectedPatientId = patientId;
   // 先に前の表を消す（上で確認済みなので、loadInputForm では重ねて確認しない）。
   // 消さないと、読み込みに失敗したとき（ログイン切れ・通信エラー・要求が多すぎる、など）に、前の患者の表が残ったまま
@@ -270,8 +301,9 @@ async function selectPatient(patientId) {
   try {
     await loadInputForm();
   } catch (err) {
-    // 読み込めなかったら、患者を選んでいない状態に戻す（表が無いのに、選択中の表示だけが残らないように）
-    if (selectedPatientId === patientId && !loadedForm) {
+    // 読み込めなかったら、患者を選んでいない状態に戻す（表が無いのに、選択中の表示だけが残らないように）。
+    // そのあとに患者を選び直している場合（続けてクリックした、など）は、新しいほうの読み込みに任せて、何もしない
+    if (mySelect === selectSeq && selectedPatientId === patientId && !loadedForm) {
       selectedPatientId = null;
       document.querySelectorAll('.patient-btn').forEach(b => b.classList.remove('active'));
     }
@@ -280,20 +312,30 @@ async function selectPatient(patientId) {
 }
 
 async function loadInputForm() {
-  const patientId = selectedPatientId;
+  const patientId = selectedPatientId ?? loadedForm?.patientId ?? null;
   const monthEl = document.getElementById('sel-month');
-  // 対象月を切り替えたとき：未保存の変更があれば確認し、取りやめるなら月の表示を元に戻す
-  if (loadedMonth && monthEl.value !== loadedMonth && !confirmDiscardUnsaved()) {
-    monthEl.value = loadedMonth;
+  // 一括保存の実行中は、月を切り替えない（月の表示は、いまの表の月に戻す）
+  if (savingRecords) {
+    if (loadedMonth && monthEl.value !== loadedMonth) { monthEl.value = loadedMonth; busySaving(); }
     return;
   }
   const ym = monthEl.value;
-  if (!patientId || !ym) return;
+  // 月の欄を空にした場合は、いまの表の月に戻す（表と月の欄が食い違わないように）
+  if (!ym) { if (loadedMonth) monthEl.value = loadedMonth; return; }
+  const [year, month] = ym.split('-');
+  // 月の欄にキーボードで年を打っている途中（0002 年、0020 年…）は、何もしない。
+  // 打ち終わる前に読み込みや確認が走ると、ありえない年の表が出て、そのまま保存もできてしまう
+  if (!(Number(year) >= 2000 && Number(year) <= 2100)) return;
+  // 対象月を切り替えたとき：未保存の変更があれば確認し、取りやめるなら月の表示を元に戻す
+  if (loadedMonth && ym !== loadedMonth && !confirmDiscardUnsaved()) {
+    monthEl.value = loadedMonth;
+    return;
+  }
+  if (!patientId) return;
 
   // 前の表（前の月・前の患者のもの）は先に消し、読み込みが済んだものだけを表示する
   clearInputForm();
   const seq = inputFormSeq;
-  const [year, month] = ym.split('-');
   const [itemsWithPrices, existing, mealPrices] = await Promise.all([
     api(`/items/prices?year=${year}&month=${month}`),
     api(`/records?patient_id=${patientId}&year=${year}&month=${month}`),
@@ -505,22 +547,36 @@ function updateMealCostTotal() {
 
 const MEAL_PRICE_INPUTS = ['mp-breakfast', 'mp-lunch', 'mp-dinner', 'mp-cap'];
 
+const MEAL_PRICE_KEYS = { 'mp-breakfast': 'breakfast_price', 'mp-lunch': 'lunch_price', 'mp-dinner': 'dinner_price', 'mp-cap': 'meal_cap' };
+
+// 数字の欄に、数字として読めない入力（「5-」「5e」、マイナス、小数）が無いかを確かめる。あれば知らせて、その欄を返す。
+// ブラウザーは、読めない入力を「空」として扱う。確かめずに保存すると 0（＝実績の削除）として保存され、「保存しました」と出てしまう
+function findUnreadableInput(inputs) {
+  const bad = inputs.find(el => el.type === 'number' && !el.validity.valid);
+  if (!bad) return null;
+  const where = bad.dataset.date ? `${bad.dataset.date} の欄` : '食事単価・上限の欄';
+  bad.focus();
+  alert(`${where}の入力が、数字として読めません（0 以上の整数で入力してください）。\nまだ保存していません。`);
+  return bad;
+}
+
+// 食事単価・上限を保存する。送るのは、変更した欄だけ（ほかの人が直した欄を、この画面の古い値で上書きしないため）。
+// bar は、その単価の欄が載っている表の部品（省略時は、いま画面に出ているもの）。保存したら true
 async function saveMealPrices(patientId, year, month, opts = {}) {
-  const fields = MEAL_PRICE_INPUTS.map(id => document.getElementById(id));
-  const sent = fields.map(el => el.value);
-  await api('/meal-prices', { method: 'POST', body: {
-    patient_id: Number(patientId),
-    year: Number(year),
-    month: Number(month),
-    breakfast_price: Number(sent[0]) || 0,
-    lunch_price:     Number(sent[1]) || 0,
-    dinner_price:    Number(sent[2]) || 0,
-    meal_cap:        Number(sent[3]) || 0,
-  }});
+  const bar = opts.bar || document.querySelector('#input-form .meal-price-bar');
+  if (!bar) return false;
+  const dirty = [...bar.querySelectorAll('input[data-dirty]')].filter(el => MEAL_PRICE_KEYS[el.id]);
+  if (!dirty.length) { if (!opts.quiet) showToast('食事単価の変更はありません'); return false; }
+  if (!opts.checked && findUnreadableInput(dirty)) return false;
+  const sent = dirty.map(el => el.value);
+  const body = { patient_id: Number(patientId), year: Number(year), month: Number(month) };
+  dirty.forEach((el, i) => { body[MEAL_PRICE_KEYS[el.id]] = Number(sent[i]) || 0; });
+  await api('/meal-prices', { method: 'POST', body });
   // 保存できた欄から「未保存」の印を外す（送信中に打ち直された欄は、まだ保存されていないので残す）
-  fields.forEach((el, i) => { if (el.value === sent[i]) delete el.dataset.dirty; });
+  dirty.forEach((el, i) => { if (el.value === sent[i]) delete el.dataset.dirty; });
   updateMealCostTotal();
   if (!opts.quiet) showToast('食事単価を保存しました');
+  return true;
 }
 
 async function saveAllRecords() {
@@ -529,23 +585,32 @@ async function saveAllRecords() {
   const form = loadedForm;
   if (!form || savingRecords) return;
   const patientId = form.patientId;
+  // 読むのは、いま画面に出ているこの表の欄だけ。保存の途中で画面が変わっても、別の表の欄を読まないよう、表そのものを控えておく
+  const table = document.getElementById('monthly-tbl');
+  const bar = document.querySelector('#input-form .meal-price-bar');
+  if (!table || !bar) return;
 
   // 変更した欄だけを送る。
   // 表の全部の欄を送り直すと、この画面を開いた後にほかの人が保存した内容を、
   // 自分が触っていない欄の古い値で上書きして消してしまうため。
-  const dirty = [...document.querySelectorAll('#monthly-tbl .cell-input[data-dirty]')];
-  const dirtyPrices = document.querySelector('#input-form .meal-price-bar input[data-dirty]');
-  if (!dirty.length && !dirtyPrices) { showToast('変更はありません'); return; }
+  const dirty = [...table.querySelectorAll('.cell-input[data-dirty]')];
+  const dirtyPrices = [...bar.querySelectorAll('input[data-dirty]')];
+  if (!dirty.length && !dirtyPrices.length) { showToast('変更はありません'); return; }
+  if (findUnreadableInput([...dirtyPrices, ...dirty])) return;
   const dates = [...new Set(dirty.map(el => el.dataset.date))].sort();
 
   const button = document.querySelector('#input-form button[onclick="saveAllRecords()"]');
   savingRecords = true;
   if (button) { button.disabled = true; button.textContent = '保存中…'; }
-  let savedDays = 0, stoppedAt = null;
+  let savedDays = 0, stoppedAt = null, pricesFailed = false;
   try {
     // 食事単価・上限を変えていたら、一緒に保存する
     // （単価を入れて「一括保存」だけを押すと、画面には金額が出るのに、単価は保存されないままになっていた）
-    if (dirtyPrices) await saveMealPrices(form.patientId, form.year, form.month, { quiet: true });
+    if (dirtyPrices.length) {
+      pricesFailed = true;
+      await saveMealPrices(form.patientId, form.year, form.month, { quiet: true, bar, checked: true });
+      pricesFailed = false;
+    }
     for (const date of dates) {
       stoppedAt = date;
       const changed = dirty.filter(el => el.dataset.date === date).map(el => ({ el, sent: el.value }));
@@ -555,13 +620,15 @@ async function saveAllRecords() {
         items: changed.filter(c => c.el.dataset.item)
           .map(c => ({ item_id: Number(c.el.dataset.item), quantity: Number(c.sent) || 0 })),
       };
-      // 食事・サービスの欄は1日分が1行で保存されるので、どれかを変更した日は6欄をまとめて送る
-      if (changed.some(c => c.el.dataset.meal)) {
+      // 食事・サービスの欄も、変更した欄だけを送る（サーバーは、送られてこなかった欄をいまの値のまま残す）。
+      // 以前は、どれかを変えた日は6欄をまとめて送っていたので、同じ日を開いていたほかの人の入力を、古い値で上書きして消した
+      const mealCells = changed.filter(c => c.el.dataset.meal);
+      if (mealCells.length) {
         body.meal = {};
-        document.querySelectorAll(`#monthly-tbl .cell-input[data-meal][data-date="${date}"]`).forEach(el => {
-          const field = el.dataset.meal;
-          body.meal[field] = field === 'service_status' ? el.value : (Number(el.value) || 0);
-        });
+        for (const c of mealCells) {
+          const field = c.el.dataset.meal;
+          body.meal[field] = field === 'service_status' ? c.sent : (Number(c.sent) || 0);
+        }
       }
       await api('/records', { method: 'POST', body });
       // 保存できた欄から印を外す（途中で失敗した場合、残りの欄は未保存のまま再度保存できる）。
@@ -570,10 +637,13 @@ async function saveAllRecords() {
       savedDays++;
       stoppedAt = null;
     }
-    showToast('保存しました');
+    // 保存の最中に入力した欄は、まだ保存されていない。「保存しました」だけでは気づけないので、知らせる
+    const left = table.querySelector('.cell-input[data-dirty]') || bar.querySelector('input[data-dirty]');
+    showToast(left ? '保存しました（保存の最中に入力した欄は、まだ保存されていません。もう一度「一括保存」を押してください）' : '保存しました');
   } catch (err) {
     // 途中で止まったときは、どこまで保存できたかを知らせる（理由は、このあと共通のエラー表示に出る）
-    if (stoppedAt) showToast(`${savedDays} 日分は保存しました。${stoppedAt} の分から後は、まだ保存されていません（入力は画面に残っています）`);
+    if (pricesFailed) showToast('食事単価を保存できなかったため、表の入力も、まだ保存していません（入力は画面に残っています）');
+    else if (stoppedAt) showToast(`${savedDays} 日分は保存しました。${stoppedAt} の分から後は、まだ保存されていません（入力は画面に残っています）`);
     throw err;
   } finally {
     savingRecords = false;

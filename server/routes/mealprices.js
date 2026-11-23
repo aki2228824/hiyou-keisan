@@ -36,14 +36,21 @@ router.post('/', requireRole('admin', 'staff'), (req, res) => {
   const ym = parseYearMonth(year, month);
   if (ym.error) return res.status(400).json({ error: ym.error });
 
-  // 単価・上限は数値にそろえてから保存する（未入力は 0、数値以外は 400）
-  const prices = [breakfast_price, lunch_price, dinner_price, meal_cap].map(toPrice);
-  if (prices.some(v => v === null))
+  // 単価・上限は整数にそろえてから保存する（空欄は 0、整数として読めないものは 400）。
+  // 送られてこなかった項目（undefined）は、その月に効いているいまの値のまま残す
+  // （以前は4項目をまとめて上書きしていたので、2人が別々の項目を直すと、先に保存した分が消えた）
+  const given = [breakfast_price, lunch_price, dinner_price, meal_cap];
+  const checked = given.map(v => (v === undefined ? undefined : toPrice(v)));
+  if (checked.some(v => v === null))
     return res.status(400).json({ error: '食事単価・上限は、0〜9,999,999 の整数（円）で入力してください（小数は使えません）' });
 
   // 存在しない患者への登録を防ぐ（sql.js では外部キー制約が効かないため）
   if (!db.query('SELECT id FROM patients WHERE id=?', [pid])[0])
     return res.status(404).json({ error: '患者が見つかりません' });
+
+  // その月に効いている値（その月の設定。無ければ直近の過去月の設定。それも無ければ 0）
+  const current = getMealPrices(pid, ym.year, ym.month);
+  const prices = ['breakfast_price', 'lunch_price', 'dinner_price', 'meal_cap'].map((key, i) => (checked[i] === undefined ? Number(current[key]) || 0 : checked[i]));
 
   db.run(`
     INSERT INTO patient_meal_prices (patient_id, year, month, breakfast_price, lunch_price, dinner_price, meal_cap)
