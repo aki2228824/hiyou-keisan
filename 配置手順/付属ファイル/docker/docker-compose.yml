@@ -11,6 +11,8 @@ services:
       PORT: "3000"
       DB_PATH: /app/data/hiyou.db
     ports:
+      # NAS 内蔵のリバースプロキシ（HTTPS）を使い、.env に TRUST_PROXY=1 を書く場合は、下を "127.0.0.1:3000:3000" に変える
+      # （3000 番へほかのPCから直接つながると、送り手が接続元のアドレスを偽れるため。配置手順/2_運用編.md の 3-3）
       - "3000:3000"
     volumes:
       - ./data:/app/data

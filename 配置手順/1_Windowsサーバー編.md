@@ -57,7 +57,8 @@ C:\hiyou\backup   毎晩のバックアップ（daily / monthly。2_運用編の
 
 ### Step 0. 開発PCでの準備
 
-1. 開発PCの Node.js を 26 LTS に上げ、`npm ci` → `npm start` → ログイン → PDF 出力まで一度確認する。現在の v25.9.0 は 2026-06-01 でサポートが終わっており、本番と同じ系列にそろえる。**これが Node 26 での動作確認を兼ねる。** 2026-11-21 の依存ライブラリの更新で、Node.js は 22.12 以上が必須になった（それより古いと起動しない）。確認には `node tools\smoke-test.js`（ログイン・PDF・ロック・操作ログ・非常用の再設定ツールなど 80 項目。元の DB には書き込まない）が使える。
+1. 開発PCの Node.js を 26 LTS に上げ、`npm ci` → `npm start` → ログイン → PDF 出力まで一度確認する。現在の v25.9.0 は 2026-06-01 でサポートが終わっており、本番と同じ系列にそろえる。**これが Node 26 での動作確認を兼ねる。** 2026-11-21 の依存ライブラリの更新で、Node.js は 22.12 以上が必須になった（それより古いと起動しない）。確認には `node tools\smoke-test.js`（ログイン・PDF・ロック・操作ログ・非常用の再設定ツールなど 84 項目。元の DB には書き込まない）が使える。
+   **開発PCの Node.js をすぐに上げられない場合は、この手順を後回しにしてよい。** その代わり、サーバー機で Step 6 の確認のあとに `node tools\smoke-test.js` を実行する（Step 6 の末尾）。サーバー機の Node.js 26 で全項目が合格すれば、同じ確認になる【実測 2026-11-22: GitHub から取り直して `npm.cmd ci --omit=dev` を実行しただけのフォルダで、回帰テストと自己テストが全項目合格。ただし Node.js は 25.9.0】。
 2. Chrome の置き場所の固定（`.puppeteerrc.cjs` の追加）は **対応済み**。2026-11-21 にリポジトリへ追加し、開発PCでも Chrome をプロジェクト内の `.cache` に入れ直して PDF 出力を確認した。別の PC で開発を続ける場合は、`git pull` のあとに一度 `npm ci`（または `npx.cmd puppeteer browsers install chrome`）を実行する。理由は §6。
 
 ### Step 1. サーバー機の下準備
@@ -171,7 +172,7 @@ Get-ChildItem C:\hiyou\app\.cache\puppeteer\chrome -Recurse -Filter chrome.exe |
 - 後日 `vulnerabilities` の指摘が出るようになっても、サーバー上で `npm audit fix` は実行しない（開発PCで更新し、PDF まで確認してから push する。[2_運用編.md](2_運用編.md) の 5章の 8）。
 - `npm ci` は registry.npmjs.org と Chrome の配布元へ HTTPS で出られる必要がある。Chrome だけ失敗したときは `npx.cmd puppeteer browsers install chrome` で取り直せる（実測 26 秒）。
 
-### Step 5. .env と DB を引っ越す
+### Step 5. .env を作る（DB は空から始める）
 
 1. **.env** はテンプレートをコピーしてから編集する（メモ帳の「名前を付けて保存」で `.env.txt` になる事故を避けるため）。
 
@@ -182,20 +183,22 @@ notepad C:\hiyou\app\.env
 ```
 
    - `DIFY_API_URL` / `DIFY_API_KEY`: 開発PCの .env の値を写す
+   - `EXPORT_ENABLED=false`（**切り替えの当日までは false にしておく。** true のままだと、準備中のサーバーが月曜 6:00 に、実績が 1 件も無くても週次レポートを送信する。当日に true へ変える: [2_運用編.md](2_運用編.md) の 1-2 の 4）
    - `SESSION_SECRET=<上の 64 文字>`（行頭の # を外す。未設定だとリポジトリに書かれた既定値で署名される）
    - `PORT=3000`
    - `DB_PATH=C:/hiyou/data/hiyou.db`（区切りは `/`。テンプレートでは行頭に # が付いているので、# を外す。`PORT` の行も同じく # を外す）
    - 開発PCの現在の .env には SESSION_SECRET / PORT / DB_PATH の 3 つが無いので、必ず追加する。完成形の例は `C:\hiyou\app\配置手順\付属ファイル\windows\env.server.example`。
    - テンプレートの末尾にある `TRUST_PROXY` / `HOST`（HTTPS にするとき）、`PASSWORD_MIN_LENGTH` / `LOGIN_MAX_FAILURES` / `LOGIN_LOCK_MINUTES`（パスワードの文字数、ロックまでの回数と時間）、`AUDIT_LOG_DIR`（操作ログの保存先）は任意。# を付けたままなら既定値（13 文字・5 回・15 分・`C:\hiyou\data\audit`）で動く。
 
-2. **DB**: 開発PCでアプリを止めてから（保存途中のファイルを持ち出さないため）`data\hiyou.db` を USB メモリ等でサーバーの `C:\hiyou\data\hiyou.db` に置く。USB 側は消す。
+2. **DB は空から始める（推奨）。** 開発PCの現在の DB はテストデータだけ（患者 7 名はすべてテスト用の名前。2026-11-21 に確認）なので、コピーしない。`C:\hiyou\data` に何も置かなければ、Step 6 の最初の起動で新しい DB が作られ、`admin / admin123` が登録される。Step 8 で LAN に開ける前に必ずパスワードを変える（[2_運用編.md](2_運用編.md) の 1-2 の 6）。
+   - 新しい DB には、病棟 3 つ・物品 15 品目・単価の初期値が入っている。**開発PCの画面で直した単価は引き継がれない**ので、使い始める前に単価の確認、患者・食事単価・アカウントの登録を行う（[2_運用編.md](2_運用編.md) の 1-2a）。
+
+   **開発PCの DB を引き継ぐ場合だけ**（開発PCに実際のデータを入力済みのとき）: 開発PCでアプリを止めてから（保存途中のファイルを持ち出さないため）`data\hiyou.db` を USB メモリ等でサーバーの `C:\hiyou\data\hiyou.db` に置く。USB 側は消す。
 
 ```powershell
 Copy-Item E:\hiyou.db C:\hiyou\data\hiyou.db      # E: は USB メモリの例
 Get-Item C:\hiyou\data\hiyou.db | Format-List FullName, Length, LastWriteTime
 ```
-
-   **開発PCの現在の DB はテストデータだけ**（患者 7 名はすべてテスト用の名前。2026-11-21 に確認）なので、本番は空の DB から始めることを勧める。その場合はコピー不要で、初回起動時に `admin / admin123` が作られる。Step 8 で LAN に開ける前に必ずパスワードを変える（[2_運用編.md](2_運用編.md) の 1-2）。
 
 ### Step 6. 手で起動して確認（サービス化の前に問題を切り分ける）
 
@@ -204,20 +207,29 @@ cd C:\hiyou\app
 node server\index.js
 ```
 
-期待する出力:
+期待する出力（空の DB から始めた場合の、最初の起動）【実測 2026-11-22: GitHub から取り直したフォルダで、表示が一致することを確認】:
 
 ```
 ◇ injected env (9) from .env // tip: ...          ← dotenv の案内。( ) 内は読み込んだ変数の数。0 なら .env を読めていない
-DBファイル: C:\hiyou\data\hiyou.db（65,536 バイト）   ← DB_PATH の場所か確認する。新規のときは「見つからないため新しく作成します」と出る
+DBファイル: C:\hiyou\data\hiyou.db（見つからないため新しく作成します）   ← DB_PATH の場所か確認する。2 回目以降の起動と、DB を引き継いだ場合は「（65,536 バイト）」のように大きさが出る
 操作ログ: C:\hiyou\data\audit                        ← 操作ログの保存先（DB と同じフォルダの audit。無ければ自動で作られる）
-週次使用量レポート: cron登録 (0 6 * * 1 / Asia/Tokyo)
+週次使用量レポート: EXPORT_ENABLED が true でないため無効   ← 切り替えの当日に true にすると「cron登録 (0 6 * * 1 / Asia/Tokyo)」になる
 療養介護サービス提供実績記録票 起動: http://localhost:3000
+初期管理者を作成しました: admin / admin123（ログイン後にパスワードを変更してください）   ← 空の DB での最初の起動のときだけ出る
 ```
 
-- **`初期管理者を作成しました: admin / admin123` が出たら、DB を引き継いだつもりなのに空の DB が新規作成されている**（DB_PATH の書き間違い、または .env を読めていない）。止めて直す。
+- **DB を引き継いだのに `初期管理者を作成しました: admin / admin123` が出たら、空の DB が新規作成されている**（DB_PATH の書き間違い、または .env を読めていない）。止めて直す。空から始めた場合は、最初の 1 回だけ出るのが正常（2 回目以降は出ない）。
 - 「Windows セキュリティの重要な警告（Node.js JavaScript Runtime）」が出ることがある。どちらを押してもよい（自動で作られる規則は Step 8 で消す）。
 - サーバー機のブラウザーで `http://localhost:3000` → ログイン → 月次集計 → PDF を 1 枚出す。初期パスワード（admin123）でログインすると、画面の上部に「パスワードの基準を満たしていません」という注意が出る（正常。Step 8 の前にパスワードを変える。新しいパスワードは 13 文字以上で、英字と数字の両方が必要）。空の DB から始めた場合は患者が 1 人もいないので、先にマスタ管理 → 患者管理でテスト用の患者を 1 名登録してから出す（Step 7 の確認 4 と Step 9 でも使い、確認がすべて終わったら削除する）。
-- 確認できたら **Ctrl+C で必ず止める**（動かしたまま次へ進むと、サービス側がポート重複で落ち続ける）。
+- 確認できたら **Ctrl+C で必ず止める**（動かしたまま次へ進むと、サービス側が起動できずに落ち続ける）。
+- 止めたあとで、回帰テストを 1 回実行しておく（約 1 分）。**Step 0 を後回しにした場合は必ず行う**（この機械の Node.js 26 で、ログイン・保存・PDF・ロック・操作ログまで動くことの確認になる）。
+
+```powershell
+cd C:\hiyou\app
+node tools\smoke-test.js        # 最後の行が「結果: 合格 N / N（全項目合格）」であること
+```
+
+  本番の DB には書き込まない（一時フォルダへコピーしたもの、DB がまだ無ければ新規の DB で、別のポート 3150 を使って確かめ、終わったら消す）。不合格の項目があれば、その行をそのまま控えて、サービス化へ進む前に原因を調べる。
 
 ### Step 7. Windows サービスにする（WinSW v2.12.0）
 
@@ -248,7 +260,7 @@ Get-Service hiyoukeisan | Format-List Name, DisplayName, Status, StartType     #
 sc.exe qfailure hiyoukeisan     # RESET_PERIOD (in seconds) : 3600 / FAILURE_ACTIONS : RESTART -- Delay = 10000 milliseconds.
 
 # 2. ログと待ち受け
-Get-Content C:\hiyou\logs\hiyou-service.out.log -Tail 20 -Encoding UTF8        # Step 6 と同じ 5 行（「操作ログ: C:\hiyou\data\audit」を含む）
+Get-Content C:\hiyou\logs\hiyou-service.out.log -Tail 20 -Encoding UTF8        # Step 6 と同じ行（「操作ログ: C:\hiyou\data\audit」を含む。2 回目以降の起動なので「初期管理者を作成しました」は出ない）
 Get-NetTCPConnection -LocalPort 3000 -State Listen | Format-Table LocalAddress, LocalPort, OwningProcess
 #    LocalAddress が :: なら全インターフェース（IPv4 も含む）で待ち受けている。127.0.0.1 だけなら LAN から届かない
 
@@ -350,7 +362,8 @@ Remove-NetFirewallRule -DisplayName "Hiyou-Keisan (TCP 3000, LAN only)"
 ### 単一インスタンスの注意
 
 - サービスは Windows が 1 つしか起動しないので、通常は二重起動にならない。
-- サービス稼働中に同じポートで手動起動した 2 つ目は `EADDRINUSE` で即終了する（実測）。**危険なのは、ポートを変えて同じ DB_PATH で起動すること**（2 つのプロセスがそれぞれメモリ上の DB をファイルへ丸ごと上書きし、片方の入力が消える）。サーバー上で試験起動するときは必ず別の DB_PATH を使う。
+- 同じ DB を使う 2 つ目のプロセスは、ポート番号が同じでも違っていても起動しない。`起動を中止しました: このDBファイルは、ほかのプロセスが使用中です（アプリ、プロセスID …）` と表示して終わり、DB にも操作ログにも書き込まない（2026-11-23 追加【実測】）。それ以前は、ポートを変えて同じ DB_PATH で起動すると 2 つとも動いてしまい、それぞれがメモリ上の DB をファイルへ丸ごと上書きして、片方の入力が消えた。サーバー上で試験起動するときは別の DB_PATH を使う（[2_運用編.md](2_運用編.md) の 2-5）。
+- この確認は、プロセスが終われば（強制終了でも）すぐに解ける。「前回の異常終了のせいで起動できない」ということは起きない【実測】。
 
 ## 5. 自動起動方式の比較（2026-11-20〜21 に確認）
 
@@ -412,7 +425,8 @@ WinSW を選んだ理由: 再起動の仕組みが Windows 標準のサービス
 
 | 症状 | 原因と対処 |
 |---|---|
-| 開始直後に止まる、数秒おきに再起動を繰り返す | `hiyou-service.err.log` を見る。`EADDRINUSE` = ポート 3000 を別のプロセス（Step 6 の止め忘れ）が使用中。`DB初期化エラー` = DB_PATH のフォルダに書けない、または DB ファイルが 0 バイト・破損（上書きせずに止まる。[2_運用編.md](2_運用編.md) の 2-6 で復元する） |
+| 開始直後に止まる、数秒おきに再起動を繰り返す | `hiyou-service.err.log` を見る。`このDBファイルは、ほかのプロセスが使用中です` = Step 6 で手動起動したものを止め忘れている（下の行）。`EADDRINUSE` = ポート 3000 をほかのプログラムが使用中。`DB初期化エラー` = DB_PATH のフォルダに書けない、または DB ファイルが 0 バイト・破損（上書きせずに止まる。[2_運用編.md](2_運用編.md) の 2-6 で復元する） |
+| 起動しない。ログに `起動を中止しました: このDBファイルは、ほかのプロセスが使用中です` | 同じ DB を開いているプロセスがほかにある（サービスが動いているのに手動でも起動した、試験起動で `DB_PATH` を変え忘れた、パスワードの再設定ツールを実行中）。表示されたプロセスID を `Get-Process -Id 番号` で確かめる。サービスが動いていれば、手動で起動する必要は無い |
 | `Unable to locate hiyou-service` で始まるエラー | xml が `hiyou-service.xml.txt` になっている、または名前が exe と違う |
 | PDF だけ失敗（`Could not find Chrome`） | `C:\hiyou\app\.cache` に Chrome が無い（`npm ci` が未実行か、Chrome のダウンロードに失敗した） → `cd C:\hiyou\app; npx.cmd puppeteer browsers install chrome` |
 | PDF だけ失敗（`Failed to launch the browser process`） | Chrome が LocalSystem で起動できていない（未検証の組み合わせ）。回避: サービスを専用の標準ユーザーで動かす（下の「権限を絞る」） |
